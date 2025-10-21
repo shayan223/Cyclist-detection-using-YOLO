@@ -10,7 +10,7 @@ CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = 'yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
-DEFAULT_MODEL_PATH = 'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = 'yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
