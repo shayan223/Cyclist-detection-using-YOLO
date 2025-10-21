@@ -7,10 +7,10 @@ import numpy as np
 
 # --- Configuration ---
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = 'yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
-DEFAULT_MODEL_PATH = 'yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
@@ -37,7 +37,7 @@ def load_model(model_path, device):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.5):
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.2):
     """Process video file and overlay cyclist bounding boxes with live display."""
     
     # Open input video
