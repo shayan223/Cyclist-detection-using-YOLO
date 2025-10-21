@@ -3,10 +3,10 @@ from ultralytics import YOLO
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = './training_data/config.yaml'
+CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = 'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
-BATCH = 16
+BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
