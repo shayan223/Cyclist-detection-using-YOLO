@@ -3,8 +3,8 @@ from ultralytics import YOLO
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = 'yolov8l.pt'  # Base YOLO model
+CONFIG_FILE_PATH = 'cyclist_training_data/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
+MODEL_PATH = './yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -27,7 +27,7 @@ def fine_tune_yolo(config_file_path, model_path, epochs, batch, device):
         device=device,
         patience=10,  # Stop training early if no improvement
         save_period=1,  # Save model after each epoch
-        project="cyclist_detection",
+        project="cyclist_detection_yolo11n",
         name="yolo_finetune"
     )
 

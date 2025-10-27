@@ -1,3 +1,9 @@
 /training_data
 /cyclist_detection
-
+/cyclist_training_data
+/Combined_Dataset
+/cyclist_Only_Dataset_v2
+/Cyclist_Unified_Dataset
+/Dataset2_cyclist_detection
+/cyclist_detection_yolo11n
+*.mp4

@@ -7,7 +7,7 @@ import numpy as np
 
 # --- Configuration ---
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = 'cyclist_detection_yolo11n/yolo_finetune/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
 DEFAULT_MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
@@ -37,7 +37,7 @@ def load_model(model_path, device):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.2):
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9):
     """Process video file and overlay cyclist bounding boxes with live display."""
     
     # Open input video
@@ -207,10 +207,10 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze video for cyclist detection using YOLO')
-    parser.add_argument('--input', '-i', required=False, help='Input video file path', default='short_trim_cyclist_division85th.mp4')
+    parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_analyzed.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
     
     args = parser.parse_args()
     
