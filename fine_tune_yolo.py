@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = 'cyclist_training_data/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
+CONFIG_FILE_PATH = 'Cyclist_Unified_Dataset/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = './yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
