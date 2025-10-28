@@ -7,7 +7,7 @@ import numpy as np
 
 # --- Configuration ---
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = 'cyclist_detection_yolo11n/yolo_finetune/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = '/cyclist_detection_yolo11n/yolo_finetune5/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
 DEFAULT_MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
