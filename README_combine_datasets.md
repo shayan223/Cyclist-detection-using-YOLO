@@ -6,6 +6,7 @@ A Python script to combine multiple YOLO format datasets into a single merged da
 
 - **Automatic Class Merging**: Intelligently merges class names from different datasets
 - **Class Filtering**: Filter datasets to include only specific classes
+- **Alias Normalization**: Maps common synonyms to canonical classes (e.g., person/pedestrian → pedestrian; bike/bicycle/biker → cyclist)
 - **Duplicate Detection**: Detects and reports duplicate images using MD5 hashing
 - **File Organization**: Maintains proper YOLO directory structure
 - **Label Updates**: Automatically updates class indices in label files
@@ -40,7 +41,7 @@ python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir merged_da
 ### With Class Filtering
 
 ```bash
-python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir merged_dataset --filter-classes cyclist person
+python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir merged_dataset --filter-classes cyclist pedestrian
 ```
 
 ### Combined Usage
@@ -55,8 +56,9 @@ python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir merged_da
 # Combine your existing datasets
 python combine_datasets.py --input-dirs cyclist_training_data Dataset2_cyclist_detection --output-dir Combined_Dataset
 
-# Filter for only cyclist-related classes
-python combine_datasets.py --input-dirs cyclist_training_data Dataset2_cyclist_detection --output-dir Cyclist_Only_Dataset --filter-classes cyclist 0
+# Filter for only cyclist and pedestrian (two-class dataset)
+# Synonyms are supported automatically (e.g., person/persons/people → pedestrian)
+python combine_datasets.py --input-dirs cyclist_training_data Dataset2_cyclist_detection --output-dir Cyclist_Pedestrian_Dataset --filter-classes cyclist pedestrian
 ```
 
 ## Input Dataset Structure
@@ -100,10 +102,10 @@ merged_dataset/
 Use the `--filter-classes` flag to include only specific classes in the merged dataset:
 
 ```bash
-# Only include cyclist and person classes
-python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir filtered_dataset --filter-classes cyclist person
+# Two-class: cyclist and pedestrian (person/persons/people are normalized to pedestrian)
+python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir filtered_dataset --filter-classes cyclist pedestrian
 
-# Only include class "0" (useful for datasets with numeric class names)
+# If you truly want a single numeric class that already matches your sources
 python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir filtered_dataset --filter-classes 0
 ```
 
@@ -111,7 +113,7 @@ python combine_datasets.py --input-dirs dataset1 dataset2 --output-dir filtered_
 
 1. **Label Filtering**: Only label files containing the specified classes are copied
 2. **Image Filtering**: Only images with corresponding valid label files are copied
-3. **Class Mapping**: Class indices are updated to maintain consistency
+3. **Class Mapping & Aliases**: Class indices are updated and common synonyms are canonicalized (e.g., person → pedestrian, bicycle → cyclist)
 4. **Statistics**: Reports how many files were filtered out
 
 ## Class Mapping (Optional)

@@ -9,3 +9,6 @@
 *epoch*
 *.mp4
 *.zip
+/Cyclist_Pedestrian_Dataset
+Pedestrian_Detection/
+People_Detection/

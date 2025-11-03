@@ -124,8 +124,8 @@ class YOLODatasetCombiner:
     def _merge_classes(self, dataset_classes: List[str], dataset_name: str) -> Dict[int, int]:
         """
         Merge class names from different datasets, handling duplicates and conflicts.
-        If filter_classes is specified, only include those classes.
-        Maps all non-cyclist classes to 'cyclist' in the destination dataset.
+        If filter_classes is specified, include only classes that map to the filtered set
+        after applying alias normalization (e.g., 'person' -> 'pedestrian').
         
         Args:
             dataset_classes: List of class names from current dataset
@@ -136,13 +136,16 @@ class YOLODatasetCombiner:
         """
         class_mapping = {}
         
+        # Normalize filter set once for comparisons
+        normalized_filter: Set[str] = set(c.lower() for c in self.filter_classes) if self.filter_classes else None
+        
         for old_idx, class_name in enumerate(dataset_classes):
-            # Skip classes that are not in the filter list (if filter is specified)
-            if self.filter_classes and class_name not in self.filter_classes:
-                continue
-            
-            # Determine the target class name
+            # Determine the target class name (apply alias normalization first)
             target_class_name = self._get_target_class_name(class_name)
+            
+            # If we are filtering and the target class is not in the requested set, skip
+            if normalized_filter is not None and (target_class_name is None or target_class_name.lower() not in normalized_filter):
+                continue
             
             # Check if target class already exists in merged classes
             if target_class_name in self.merged_classes.values():
@@ -161,36 +164,39 @@ class YOLODatasetCombiner:
     def _get_target_class_name(self, original_class_name: str) -> str:
         """
         Determine the target class name for mapping.
-        Maps various cyclist-related classes to 'cyclist'.
+        Maps cyclist and pedestrian related classes to canonical names.
         
         Args:
             original_class_name: Original class name from source dataset
             
         Returns:
-            Target class name for the merged dataset
+            Target class name for the merged dataset, or None if excluded by filtering
         """
-        # Define mappings for cyclist-related classes
-        cyclist_mappings = {
-            'cyclist': 'cyclist',
-            '0': 'cyclist',  # Common numeric representation
-            'bike': 'cyclist',
-            'bicycle': 'cyclist',
-            'biker': 'cyclist',
-            'cycling': 'cyclist',
-            'cyclists': 'cyclist',
-            'person_on_bike': 'cyclist',
-            'person_on_bicycle': 'cyclist'
+        name_lower = original_class_name.lower()
+        
+        cyclist_aliases = {
+            'cyclist', 'bike', 'bicycle', 'biker', 'cycling', 'cyclists', 'person_on_bike', 'person_on_bicycle'
+        }
+        pedestrian_aliases = {
+            'pedestrian', 'pedestrians', 'person', 'persons', 'people', 'walker', 'walkers', 'human', 'humans', 'Persona', 'Person'
         }
         
-        # Check if it's a cyclist-related class
-        if original_class_name.lower() in cyclist_mappings:
-            return cyclist_mappings[original_class_name.lower()]
+        # Canonicalize known aliases
+        if name_lower in cyclist_aliases:
+            return 'cyclist'
+        if name_lower in pedestrian_aliases:
+            return 'pedestrian'
         
-        # If filter_classes is specified, map to the first filter class
+        # If filter is provided, only include classes that match the filter exactly after aliasing
         if self.filter_classes:
-            return self.filter_classes[0]
+            normalized_filter: Set[str] = set(c.lower() for c in self.filter_classes)
+            # If the original name is directly requested (no alias), keep as-is
+            if name_lower in normalized_filter:
+                return original_class_name
+            # Otherwise, exclude by returning None
+            return None
         
-        # Default: keep original name
+        # No filter: keep original class name
         return original_class_name
     
     def _copy_and_update_labels(self, src_labels_dir: Path, dst_labels_dir: Path, 
@@ -512,7 +518,13 @@ class YOLODatasetCombiner:
             
             # Display image
             axes[idx].imshow(image)
-            axes[idx].set_title(f"{split}: {img_path.name}\n{len(bboxes)} cyclist(s)", fontsize=10)
+            # Count classes for display
+            class_counts = {}
+            for _, _, _, _, cid in bboxes:
+                cls_name = self.merged_classes.get(cid, f"class_{cid}")
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+            counts_str = ", ".join(f"{v} {k}(s)" for k, v in class_counts.items()) if class_counts else "0 objects"
+            axes[idx].set_title(f"{split}: {img_path.name}\n{counts_str}", fontsize=10)
             axes[idx].axis('off')
             
             # Draw bounding boxes
@@ -543,7 +555,7 @@ class YOLODatasetCombiner:
         plt.show()
         
         print(f"\nDisplayed {len(sample_images)} random samples from the merged dataset")
-        print(f"Red boxes show cyclist bounding boxes")
+        print(f"Red boxes show detected object bounding boxes")
     
     def _print_summary(self):
         """Print a summary of the combination process."""
