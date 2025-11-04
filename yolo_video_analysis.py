@@ -7,7 +7,7 @@ import numpy as np
 
 # --- Configuration ---
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = '/cyclist_detection_yolo11n/yolo_finetune5/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = '/cyclist_detection_yolo11n/yolo_finetune6/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 20
 BATCH = 8
 DEFAULT_MODEL_PATH = 'yolov8l.pt' #'yolov8l.pt'  # Base YOLO model
@@ -116,6 +116,7 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 # Process detections
                 annotated_frame = frame.copy()
                 cyclist_count = 0  # Counter for cyclists in current frame
+                pedestrian_count = 0  # Counter for pedestrians in current frame
                 
                 for result in results:
                     boxes = result.boxes
@@ -126,11 +127,11 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                             conf = box.conf[0].cpu().numpy()
                             cls = int(box.cls[0].cpu().numpy())
                             
-                            # Filter for cyclists (class 0: person only)
-                            if cls == 0:  # person (cyclist)
+                            # Filter for cyclists (class 0) and pedestrians (class 1)
+                            if cls == 0:  # cyclist
                                 cyclist_count += 1  # Increment cyclist counter
                                 
-                                # Draw bounding box
+                                # Draw bounding box (green for cyclists)
                                 cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
                                 
                                 # Draw label
@@ -140,25 +141,52 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                                             (int(x1) + label_size[0], int(y1)), (0, 255, 0), -1)
                                 cv2.putText(annotated_frame, label, (int(x1), int(y1) - 5), 
                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                            
+                            elif cls == 1:  # pedestrian
+                                pedestrian_count += 1  # Increment pedestrian counter
+                                
+                                # Draw bounding box (blue for pedestrians)
+                                cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+                                
+                                # Draw label
+                                label = f"pedestrian: {conf:.2f}"
+                                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                                cv2.rectangle(annotated_frame, (int(x1), int(y1) - label_size[1] - 10), 
+                                            (int(x1) + label_size[0], int(y1)), (255, 0, 0), -1)
+                                cv2.putText(annotated_frame, label, (int(x1), int(y1) - 5), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 
-                # Print cyclist count to console
-                print(f"Frame {frame_count}: {cyclist_count} cyclist(s) detected")
+                # Print counts to console
+                print(f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) detected")
                 
-                # Draw cyclist count on video (lower right corner)
-                count_text = f"Cyclists: {cyclist_count}"
-                text_size = cv2.getTextSize(count_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+                # Draw counts on video (lower right corner)
+                cyclist_text = f"Cyclists: {cyclist_count}"
+                pedestrian_text = f"Pedestrians: {pedestrian_count}"
+                
+                # Calculate text sizes
+                cyclist_text_size = cv2.getTextSize(cyclist_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+                pedestrian_text_size = cv2.getTextSize(pedestrian_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+                
+                # Calculate maximum width for both texts
+                max_width = max(cyclist_text_size[0], pedestrian_text_size[0])
                 
                 # Position text in lower right corner
-                text_x = width - text_size[0] - 20
-                text_y = height - 20
+                text_x = width - max_width - 20
+                text_y_cyclist = height - 50
+                text_y_pedestrian = height - 20
                 
                 # Draw background rectangle for better visibility
-                cv2.rectangle(annotated_frame, (text_x - 10, text_y - text_size[1] - 10), 
-                            (text_x + text_size[0] + 10, text_y + 10), (0, 0, 0), -1)
+                bg_height = text_y_pedestrian + pedestrian_text_size[1] + 10 - (text_y_cyclist - cyclist_text_size[1] - 10)
+                cv2.rectangle(annotated_frame, (text_x - 10, text_y_cyclist - cyclist_text_size[1] - 10), 
+                            (text_x + max_width + 10, text_y_pedestrian + 10), (0, 0, 0), -1)
                 
-                # Draw the count text
-                cv2.putText(annotated_frame, count_text, (text_x, text_y), 
+                # Draw cyclist count (green)
+                cv2.putText(annotated_frame, cyclist_text, (text_x, text_y_cyclist), 
                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                
+                # Draw pedestrian count (blue)
+                cv2.putText(annotated_frame, pedestrian_text, (text_x, text_y_pedestrian), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
                 
                 # Write frame to output video
                 out.write(annotated_frame)
@@ -169,7 +197,7 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     print(f"Processing frame {frame_count}/{total_frames} ({progress:.1f}%)")
             
             # Display the frame
-            cv2.imshow('Cyclist Detection - Live View', annotated_frame)
+            cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
             
             # Calculate actual delay based on speed multiplier
             actual_delay = max(1, int(frame_delay / speed_multiplier))
