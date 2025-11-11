@@ -1,0 +1,1 @@
+python combine_datasets.py --input-dirs Cyclist_Unified_Dataset Pedestrian_Detection People_Detection eurocity_yolo --output-dir Cyclist_Pedestrian_Dataset --filter-classes cyclist pedestrian
