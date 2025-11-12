@@ -238,7 +238,7 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_analyzed.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
     
     args = parser.parse_args()
     

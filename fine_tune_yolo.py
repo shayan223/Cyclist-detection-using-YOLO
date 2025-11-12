@@ -4,7 +4,7 @@ import torch
 
 # --- Configuration ---
 CONFIG_FILE_PATH = 'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = './yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = 'yolov8l.pt'#'./yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
 EPOCHS = 10
 BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
