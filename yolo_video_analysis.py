@@ -6,7 +6,7 @@ import torch
 import numpy as np
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'yolo_finetune13'
+EXPERIMENT_NAME = 'yolo_finetune14'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = './cyclist_detection_yolo11n/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
@@ -37,7 +37,7 @@ def load_model(model_path, device):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9):
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.5, iou_threshold=0.1):
     """Process video file and overlay cyclist bounding boxes with live display."""
     
     # Open input video
@@ -83,7 +83,9 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 
                 # Run YOLO detection
                 # This also outputs logging to the console, giving image size and detected objects.
-                results = model(frame, conf=confidence_threshold)
+                # Lower iou threshold (default 0.45) to prevent NMS from suppressing overlapping detections
+                # between different classes (cyclists and pedestrians)
+                results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=True)
                 #Uncomment this for logging info and bounding box coordinates
                 '''
                 # Extract detected objects
@@ -118,6 +120,8 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 cyclist_count = 0  # Counter for cyclists in current frame
                 pedestrian_count = 0  # Counter for pedestrians in current frame
                 
+                # Collect all detections
+                all_detections = []
                 for result in results:
                     boxes = result.boxes
                     if boxes is not None:
@@ -126,35 +130,45 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                             conf = box.conf[0].cpu().numpy()
                             cls = int(box.cls[0].cpu().numpy())
-                            
-                            # Filter for cyclists (class 0) and pedestrians (class 1)
-                            if cls == 0:  # cyclist
-                                cyclist_count += 1  # Increment cyclist counter
-                                
-                                # Draw bounding box (green for cyclists)
-                                cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                                
-                                # Draw label
-                                label = f"cyclist: {conf:.2f}"
-                                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                                cv2.rectangle(annotated_frame, (int(x1), int(y1) - label_size[1] - 10), 
-                                            (int(x1) + label_size[0], int(y1)), (0, 255, 0), -1)
-                                cv2.putText(annotated_frame, label, (int(x1), int(y1) - 5), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-                            
-                            elif cls == 1:  # pedestrian
-                                pedestrian_count += 1  # Increment pedestrian counter
-                                
-                                # Draw bounding box (blue for pedestrians)
-                                cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-                                
-                                # Draw label
-                                label = f"pedestrian: {conf:.2f}"
-                                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                                cv2.rectangle(annotated_frame, (int(x1), int(y1) - label_size[1] - 10), 
-                                            (int(x1) + label_size[0], int(y1)), (255, 0, 0), -1)
-                                cv2.putText(annotated_frame, label, (int(x1), int(y1) - 5), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                            all_detections.append((cls, conf, (int(x1), int(y1), int(x2), int(y2))))
+                
+                # Debug: print all detections if cyclists are present
+                if any(cls == 0 for cls, _, _ in all_detections):
+                    print(f"Frame {frame_count} DEBUG - All detections when cyclists present:")
+                    for cls, conf, bbox in all_detections:
+                        class_name = "cyclist" if cls == 0 else "pedestrian" if cls == 1 else f"class_{cls}"
+                        print(f"  {class_name}: conf={conf:.3f}, bbox={bbox}")
+                
+                # Draw detections
+                for cls, conf, (x1, y1, x2, y2) in all_detections:
+                    # Filter for cyclists (class 0) and pedestrians (class 1)
+                    if cls == 0:  # cyclist
+                        cyclist_count += 1  # Increment cyclist counter
+                        
+                        # Draw bounding box (green for cyclists)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        
+                        # Draw label
+                        label = f"cyclist: {conf:.2f}"
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), 
+                                    (x1 + label_size[0], y1), (0, 255, 0), -1)
+                        cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    
+                    elif cls == 1:  # pedestrian
+                        pedestrian_count += 1  # Increment pedestrian counter
+                        
+                        # Draw bounding box (blue for pedestrians)
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        
+                        # Draw label
+                        label = f"pedestrian: {conf:.2f}"
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), 
+                                    (x1 + label_size[0], y1), (255, 0, 0), -1)
+                        cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 
                 # Print counts to console
                 print(f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) detected")
@@ -238,7 +252,8 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_analyzed.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     
     args = parser.parse_args()
     
@@ -265,8 +280,9 @@ def main():
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
     print(f"Confidence threshold: {args.confidence}")
+    print(f"NMS IoU threshold: {args.iou}")
     
-    process_video(args.input, args.output, model, args.confidence)
+    process_video(args.input, args.output, model, args.confidence, args.iou)
 
 if __name__ == "__main__":
     main()

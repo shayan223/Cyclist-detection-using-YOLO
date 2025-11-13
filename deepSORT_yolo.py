@@ -7,7 +7,7 @@ import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'yolo_finetune13'
+EXPERIMENT_NAME = 'yolo_finetune14'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = './cyclist_detection_yolo11n/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
@@ -38,7 +38,7 @@ def load_model(model_path, device):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7):
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7, iou_threshold=0.1):
     """Process video file and overlay cyclist and pedestrian bounding boxes with tracking using DeepSORT."""
     
     # Open input video
@@ -122,7 +122,9 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     break
                 
                 # Run YOLO detection
-                results = model(frame, conf=confidence_threshold)
+                # Lower iou threshold (default 0.45) to prevent NMS from suppressing overlapping detections
+                # between different classes (cyclists and pedestrians)
+                results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=False)
                 
                 # Prepare detections for tracking
                 cyclist_detections = []
@@ -280,9 +282,10 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_tracked.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
-    parser.add_argument('--max-age', type=int, default=30, help='Maximum frames to keep a track without update')
-    parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
+    parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
+    parser.add_argument('--max-age', type=int, default=5, help='Maximum frames to keep a track without update')
+    parser.add_argument('--max-iou-distance', type=float, default=0.5, help='Maximum IOU distance for track association')
     
     args = parser.parse_args()
     
@@ -309,10 +312,11 @@ def main():
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
     print(f"Confidence threshold: {args.confidence}")
+    print(f"NMS IoU threshold: {args.iou}")
     print(f"Max age: {args.max_age} frames")
     print(f"Max IOU distance: {args.max_iou_distance}")
     
-    process_video(args.input, args.output, model, args.confidence, args.max_age, args.max_iou_distance)
+    process_video(args.input, args.output, model, args.confidence, args.max_age, args.max_iou_distance, args.iou)
 
 if __name__ == "__main__":
     main()
