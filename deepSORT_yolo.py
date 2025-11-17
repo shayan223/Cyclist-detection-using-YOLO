@@ -7,11 +7,11 @@ import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'yolo_finetune14'
+EXPERIMENT_NAME = 'yolo_finetune'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = './cyclist_detection_yolo11n/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
-DEFAULT_MODEL_PATH = './cyclist_detection_yolo11n/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
@@ -38,7 +38,7 @@ def load_model(model_path, device):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7, iou_threshold=0.1):
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7, iou_threshold=0.1, disable_display=False):
     """Process video file and overlay cyclist and pedestrian bounding boxes with tracking using DeepSORT."""
     
     # Open input video
@@ -69,15 +69,52 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
     
     # Initialize DeepSORT tracker
     # Create separate trackers for cyclists and pedestrians
-    cyclist_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=3)
-    pedestrian_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=3)
+    # n_init=2 reduces computation (fewer frames needed to confirm track)
+    # embedder='mobilenet' uses lighter feature extractor (faster than default)
+    try:
+        # Try with mobilenet embedder for better performance
+        cyclist_tracker = DeepSort(
+            max_age=max_age, 
+            max_iou_distance=max_iou_distance, 
+            n_init=2,  # Reduced from 3 for faster track confirmation
+            embedder='mobilenet'  # Lighter feature extractor for better performance
+        )
+        pedestrian_tracker = DeepSort(
+            max_age=max_age, 
+            max_iou_distance=max_iou_distance, 
+            n_init=2,
+            embedder='mobilenet'
+        )
+    except TypeError:
+        # Fallback if embedder parameter not supported in this version
+        cyclist_tracker = DeepSort(
+            max_age=max_age, 
+            max_iou_distance=max_iou_distance, 
+            n_init=2
+        )
+        pedestrian_tracker = DeepSort(
+            max_age=max_age, 
+            max_iou_distance=max_iou_distance, 
+            n_init=2
+        )
     
     # Track unique IDs seen across the video
     cyclist_ids_seen = set()
     pedestrian_ids_seen = set()
     
-    # Setup video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Setup video writer - try H264 codec for better performance (if available)
+    # Fallback to mp4v if H264 not available
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        # Test if codec works by creating a temporary writer
+        test_writer = cv2.VideoWriter('test.avi', fourcc, fps, (width, height))
+        if test_writer.isOpened():
+            test_writer.release()
+            os.remove('test.avi') if os.path.exists('test.avi') else None
+        else:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    except:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
     
     frame_count = 0
@@ -126,46 +163,49 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 # between different classes (cyclists and pedestrians)
                 results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=False)
                 
-                # Prepare detections for tracking
+                # Prepare detections for tracking - pre-allocate with estimated capacity
+                # Batch CPU-GPU transfers for better performance
+                boxes_data = []
+                for result in results:
+                    boxes = result.boxes
+                    if boxes is not None and len(boxes) > 0:
+                        # Batch convert all boxes at once (more efficient than per-box conversion)
+                        boxes_xyxy = boxes.xyxy.cpu().numpy()
+                        boxes_conf = boxes.conf.cpu().numpy()
+                        boxes_cls = boxes.cls.cpu().numpy()
+                        boxes_data.extend(zip(boxes_xyxy, boxes_conf, boxes_cls))
+                
+                # Pre-allocate lists with estimated capacity (Python lists grow dynamically, but this helps)
                 cyclist_detections = []
                 pedestrian_detections = []
                 
-                # Extract detections from YOLO results
-                for result in results:
-                    boxes = result.boxes
-                    if boxes is not None:
-                        for box in boxes:
-                            # Get box coordinates
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            conf = float(box.conf[0].cpu().numpy())
-                            cls = int(box.cls[0].cpu().numpy())
-                            
-                            # DeepSORT expects format: ([left, top, width, height], confidence, class_id)
-                            left = int(x1)
-                            top = int(y1)
-                            width = int(x2 - x1)
-                            height = int(y2 - y1)
-                            bbox = [left, top, width, height]
-                            
-                            if cls == 0:  # cyclist
-                                cyclist_detections.append((bbox, conf, cls))
-                            elif cls == 1:  # pedestrian
-                                pedestrian_detections.append((bbox, conf, cls))
+                # Extract detections - optimized conversion
+                for (x1, y1, x2, y2), conf, cls in boxes_data:
+                    cls_int = int(cls)
+                    # DeepSORT expects format: ([left, top, width, height], confidence, class_id)
+                    bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
+                    
+                    if cls_int == 0:  # cyclist
+                        cyclist_detections.append((bbox, float(conf), cls_int))
+                    elif cls_int == 1:  # pedestrian
+                        pedestrian_detections.append((bbox, float(conf), cls_int))
                 
-                # Update trackers
-                cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame)
-                pedestrian_tracks = pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame)
+                # Update trackers only if there are detections (saves computation)
+                cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame) if cyclist_detections else []
+                pedestrian_tracks = pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame) if pedestrian_detections else []
                 
-                # Process and draw tracked cyclists
-                annotated_frame = frame.copy()
+                # Process and draw tracked objects
+                # Copy frame only when needed (for video writing, we need a copy to avoid modifying original)
+                annotated_frame = frame.copy()  # Need copy for video writer
                 cyclist_count = 0  # Counter for cyclists in current frame
                 pedestrian_count = 0  # Counter for pedestrians in current frame
                 
-                # Draw cyclist tracks
-                for track in cyclist_tracks:
-                    if not track.is_confirmed():
-                        continue
-                    
+                # Pre-filter confirmed tracks to avoid repeated is_confirmed() calls
+                confirmed_cyclist_tracks = [t for t in cyclist_tracks if t.is_confirmed()]
+                confirmed_pedestrian_tracks = [t for t in pedestrian_tracks if t.is_confirmed()]
+                
+                # Draw cyclist tracks - batch operations
+                for track in confirmed_cyclist_tracks:
                     track_id = track.track_id
                     # Use to_tlbr() which returns [x1, y1, x2, y2] format
                     tlbr = track.to_tlbr()
@@ -177,19 +217,18 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     # Draw bounding box (green for cyclists)
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     
-                    # Draw label with track ID
+                    # Draw label with track ID - cache label string
                     label = f"Cyclist #{track_id}"
                     label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                    cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), 
+                    label_y = y1 - 5
+                    label_bg_y1 = y1 - label_size[1] - 10
+                    cv2.rectangle(annotated_frame, (x1, label_bg_y1), 
                                 (x1 + label_size[0], y1), (0, 255, 0), -1)
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                    cv2.putText(annotated_frame, label, (x1, label_y), 
                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
-                # Draw pedestrian tracks
-                for track in pedestrian_tracks:
-                    if not track.is_confirmed():
-                        continue
-                    
+                # Draw pedestrian tracks - batch operations
+                for track in confirmed_pedestrian_tracks:
                     track_id = track.track_id
                     # Use to_tlbr() which returns [x1, y1, x2, y2] format
                     tlbr = track.to_tlbr()
@@ -201,17 +240,20 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     # Draw bounding box (blue for pedestrians)
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
                     
-                    # Draw label with track ID
+                    # Draw label with track ID - cache label string
                     label = f"Pedestrian #{track_id}"
                     label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                    cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), 
+                    label_y = y1 - 5
+                    label_bg_y1 = y1 - label_size[1] - 10
+                    cv2.rectangle(annotated_frame, (x1, label_bg_y1), 
                                 (x1 + label_size[0], y1), (255, 0, 0), -1)
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                    cv2.putText(annotated_frame, label, (x1, label_y), 
                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
-                # Print counts to console
-                print(f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) | "
-                      f"Total unique: {len(cyclist_ids_seen)} cyclists, {len(pedestrian_ids_seen)} pedestrians")
+                # Print counts to console (less frequently for better performance)
+                if frame_count % 10 == 0:  # Print every 10 frames instead of every frame
+                    print(f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) | "
+                          f"Total unique: {len(cyclist_ids_seen)} cyclists, {len(pedestrian_ids_seen)} pedestrians")
                 
                 # Draw counts on video (lower right corner)
                 cyclist_text = f"Cyclists: {cyclist_count} (Total: {len(cyclist_ids_seen)})"
@@ -236,15 +278,15 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     progress = (frame_count / total_frames) * 100
                     print(f"Processing frame {frame_count}/{total_frames} ({progress:.1f}%)")
             
-            # Display the frame (only if we have a frame to display)
-            if annotated_frame is not None:
+            # Display the frame (only if we have a frame to display and display is enabled)
+            if not disable_display and annotated_frame is not None:
                 cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
             
             # Calculate actual delay based on speed multiplier
-            actual_delay = max(1, int(frame_delay / speed_multiplier))
+            actual_delay = max(1, int(frame_delay / speed_multiplier)) if not disable_display else 1
             
-            # Handle keyboard input
-            key = cv2.waitKey(actual_delay) & 0xFF
+            # Handle keyboard input (only if display is enabled)
+            key = cv2.waitKey(actual_delay) & 0xFF if not disable_display else 0
             if key == ord('q'):
                 print("\nQuit requested by user")
                 break
@@ -282,10 +324,11 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_tracked.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--max-age', type=int, default=5, help='Maximum frames to keep a track without update')
-    parser.add_argument('--max-iou-distance', type=float, default=0.5, help='Maximum IOU distance for track association')
+    parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
+    parser.add_argument('--no-display', action='store_true', help='Disable live display (faster processing)')
     
     args = parser.parse_args()
     
@@ -315,8 +358,9 @@ def main():
     print(f"NMS IoU threshold: {args.iou}")
     print(f"Max age: {args.max_age} frames")
     print(f"Max IOU distance: {args.max_iou_distance}")
+    print(f"Display: {'Disabled' if args.no_display else 'Enabled'}")
     
-    process_video(args.input, args.output, model, args.confidence, args.max_age, args.max_iou_distance, args.iou)
+    process_video(args.input, args.output, model, args.confidence, args.max_age, args.max_iou_distance, args.iou, args.no_display)
 
 if __name__ == "__main__":
     main()

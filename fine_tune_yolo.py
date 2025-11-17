@@ -5,7 +5,7 @@ import torch
 # --- Configuration ---
 CONFIG_FILE_PATH = 'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
 MODEL_PATH = 'yolov8l.pt'#'./yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
-EPOCHS = 10
+EPOCHS = 100
 BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -25,10 +25,11 @@ def fine_tune_yolo(config_file_path, model_path, epochs, batch, device):
         epochs=epochs,
         batch=batch,
         device=device,
-        patience=10,  # Stop training early if no improvement
+        patience=5,  # Stop training early if no improvement
         save_period=1,  # Save model after each epoch
-        project="cyclist_detection_yolo11n",
-        name="yolo_finetune"
+        project="cyclist_detection_yolo8",
+        name="yolo_finetune",
+        resume=False
     )
 
     validation_results = model.val(device=device)
