@@ -6,11 +6,10 @@ import torch
 import numpy as np
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'yolo_finetune2'
+EXPERIMENT_NAME = 'rtdetr_finetune3'#'yolo_finetune2'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
-DEFAULT_MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = './cyclist_detection_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''

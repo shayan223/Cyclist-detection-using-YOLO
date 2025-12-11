@@ -15,3 +15,6 @@ People_Detection/
 ECP*/
 cyclist_detection_yolo11n/
 eurocity_yolo/
+
+*.pt
+*.onnx
