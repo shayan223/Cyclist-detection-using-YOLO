@@ -154,6 +154,21 @@ val: train/images
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.current_frame_number = 0
     
+    def set_video_position_percent(self, percent):
+        """
+        Set video position to a specific percentage.
+        
+        Args:
+            percent: Percentage (0-100) to start from
+        """
+        if percent < 0 or percent > 100:
+            raise ValueError("Percentage must be between 0 and 100")
+        target_frame = int(self.total_frames * percent / 100.0)
+        target_frame = min(target_frame, self.total_frames - 1)  # Ensure within bounds
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        self.current_frame_number = target_frame
+        return target_frame
+    
     def bbox_to_yolo(self, x, y, w, h, img_width, img_height):
         """Convert bounding box from pixel coordinates to YOLO format (normalized)."""
         center_x = (x + w / 2) / img_width
@@ -740,6 +755,13 @@ val: train/images
             return
         
         self.reset_video()
+        
+        # Set starting position if specified
+        start_percent = getattr(self, 'start_percent', None)
+        if start_percent is not None and start_percent > 0:
+            start_frame = self.set_video_position_percent(start_percent)
+            print(f"Starting video at {start_percent}% (frame {start_frame})")
+        
         self.movement_timestamps = []
         self.last_movement_frame = -1
         self.motion_history.clear()  # Reset temporal filtering history
@@ -789,7 +811,8 @@ val: train/images
         print("  'q': Quit")
         print("=======================\n")
         
-        frame_count = 0
+        # Initialize frame count from current video position
+        frame_count = self.current_frame_number
         paused = False
         current_frame = None
         paused_frame = None  # Store the paused frame (original, not display)
@@ -812,7 +835,10 @@ val: train/images
         # Initialize progress bar for headless mode
         progress_bar = None
         if headless_scan and TQDM_AVAILABLE:
-            progress_bar = tqdm(total=self.total_frames, desc="Scanning", unit="frame", 
+            # Adjust total for progress bar based on starting position
+            start_frame = self.current_frame_number
+            remaining_frames = self.total_frames - start_frame
+            progress_bar = tqdm(total=remaining_frames, initial=0, desc="Scanning", unit="frame",
                               bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         
         # Terminal input handling for headless mode
@@ -1288,8 +1314,14 @@ def main():
                        help='Disable auto-pause on motion detection')
     parser.add_argument('--headless-scan', action='store_true',
                        help='Scan in terminal with progress bar, only show GUI on detections (saves IO/compute)')
+    parser.add_argument('--start-percent', type=float, default=0.0,
+                       help='Start video at this percentage (0-100, default: 0)')
     
     args = parser.parse_args()
+    
+    # Validate start percentage
+    if args.start_percent < 0 or args.start_percent > 100:
+        parser.error("--start-percent must be between 0 and 100")
     
     # Create detector
     detector = MovementDetector(
@@ -1306,6 +1338,10 @@ def main():
         dataset_dir=args.dataset_dir,
         auto_pause=not args.no_auto_pause
     )
+    
+    # Set start percentage if specified
+    if args.start_percent > 0:
+        detector.start_percent = args.start_percent
     
     # Select region
     if not detector.select_region():
