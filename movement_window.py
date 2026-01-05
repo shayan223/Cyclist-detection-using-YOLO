@@ -4,11 +4,23 @@ import argparse
 from collections import deque
 import json
 from datetime import timedelta
+import os
+from pathlib import Path
+import time
+import sys
+import threading
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    print("Warning: tqdm not available. Install with 'pip install tqdm' for progress bars.")
 
 class MovementDetector:
     def __init__(self, video_path, motion_threshold=30, min_area=100, buffer_size=10, 
                  temporal_frames=3, min_aspect_ratio=0.2, max_aspect_ratio=5.0,
-                 min_solidity=0.4, min_compactness=0.25, min_distance_ratio=0.6, max_objects=2):
+                 min_solidity=0.4, min_compactness=0.25, min_distance_ratio=0.6, max_objects=2,
+                 dataset_dir="pdx_cyclist_dataset", auto_pause=True):
         """
         Initialize the movement detector.
         
@@ -32,6 +44,23 @@ class MovementDetector:
         self.min_compactness = min_compactness
         self.min_distance_ratio = min_distance_ratio
         self.max_objects = max_objects
+        self.auto_pause = auto_pause
+        
+        # Dataset creation
+        self.dataset_dir = Path(dataset_dir)
+        self.dataset_images_dir = self.dataset_dir / "train" / "images"
+        self.dataset_labels_dir = self.dataset_dir / "train" / "labels"
+        self.saved_count = 0
+        
+        # Initialize dataset directories
+        self.dataset_images_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_labels_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get next available file number to avoid overwriting
+        self.next_file_number = self.get_next_file_number()
+        
+        # Create data.yaml file
+        self.create_data_yaml()
         
         # Video properties
         self.cap = cv2.VideoCapture(video_path)
@@ -68,10 +97,92 @@ class MovementDetector:
         self.last_movement_frame = -1
         self.movement_cooldown = int(self.fps * 0.5)  # 0.5 seconds cooldown between detections
         
+        # Dataset annotation state
+        self.selected_boxes = []  # Selected bounding boxes for current frame
+        self.manual_boxes = []  # Manually drawn bounding boxes
+        self.drawing_box = False  # Whether currently drawing a manual box
+        self.box_start = None  # Start point for manual box
+        self.current_box = None  # Current box being drawn
+        
+        # Resume cooldown - prevent auto-pause for N frames after resuming
+        self.RESUME_COOLDOWN_FRAMES = 100
+        self.resume_cooldown_counter = 0
+        
+        # Playback speed control
+        self.playback_speed = 1.0  # 1x = normal, 2x = 2x speed, etc.
+        self.speed_multipliers = [1.0, 2.0, 4.0, 8.0, 16.0]  # Available speed options
+        self.speed_index = 0  # Current index in speed_multipliers
+        
+    def get_next_file_number(self):
+        """Get the next available file number by checking existing files."""
+        if not self.dataset_images_dir.exists():
+            return 0
+        
+        # Find all existing frame files
+        existing_files = list(self.dataset_images_dir.glob("frame_*.jpg"))
+        if not existing_files:
+            return 0
+        
+        # Extract numbers from filenames and find the maximum
+        max_num = -1
+        for file in existing_files:
+            try:
+                # Extract number from filename like "frame_00000123.jpg"
+                num_str = file.stem.split('_')[1]  # Get "00000123"
+                num = int(num_str)
+                max_num = max(max_num, num)
+            except (ValueError, IndexError):
+                continue
+        
+        return max_num + 1
+    
+    def create_data_yaml(self):
+        """Create data.yaml file for YOLO dataset."""
+        yaml_path = self.dataset_dir / "data.yaml"
+        yaml_content = """names:
+- cyclist
+nc: 1
+train: train/images
+val: train/images
+"""
+        with open(yaml_path, 'w') as f:
+            f.write(yaml_content)
+        print(f"Created dataset config at: {yaml_path}")
+    
     def reset_video(self):
         """Reset video to beginning."""
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.current_frame_number = 0
+    
+    def bbox_to_yolo(self, x, y, w, h, img_width, img_height):
+        """Convert bounding box from pixel coordinates to YOLO format (normalized)."""
+        center_x = (x + w / 2) / img_width
+        center_y = (y + h / 2) / img_height
+        width = w / img_width
+        height = h / img_height
+        return center_x, center_y, width, height
+    
+    def save_frame_as_dataset(self, frame, frame_number, bounding_boxes):
+        """Save frame and annotations in YOLO format."""
+        # Generate unique filename using sequential numbering across all videos
+        filename = f"frame_{self.next_file_number:08d}.jpg"
+        image_path = self.dataset_images_dir / filename
+        label_path = self.dataset_labels_dir / filename.replace('.jpg', '.txt')
+        
+        # Save image
+        cv2.imwrite(str(image_path), frame)
+        
+        # Save labels (class 0 = cyclist)
+        with open(label_path, 'w') as f:
+            for bbox in bounding_boxes:
+                x, y, w, h = bbox[:4]  # Get first 4 elements (x, y, w, h)
+                center_x, center_y, width, height = self.bbox_to_yolo(x, y, w, h, self.width, self.height)
+                f.write(f"0 {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}\n")
+        
+        self.saved_count += 1
+        self.next_file_number += 1  # Increment for next file
+        print(f"Saved frame {frame_number} as dataset sample #{self.saved_count} ({len(bounding_boxes)} cyclists) -> {filename}")
+        return image_path, label_path
         
     def draw_polygon_callback(self, event, x, y, flags, param):
         """Mouse callback for drawing polygon."""
@@ -84,6 +195,60 @@ class MovementDetector:
                 self.polygon_complete = True
                 self.create_mask()
                 print("Polygon complete! Right-click again to reset, or press 'c' to confirm.")
+    
+    def annotation_callback(self, event, x, y, flags, param):
+        """Mouse callback for annotation mode (clicking boxes and drawing manual boxes)."""
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # Check if clicking on a detected bounding box
+            clicked_box = None
+            for i, (bx, by, bw, bh) in enumerate(param['detected_boxes']):
+                if bx <= x <= bx + bw and by <= y <= by + bh:
+                    clicked_box = i
+                    break
+            
+            if clicked_box is not None:
+                # Toggle selection of this box
+                bbox = param['detected_boxes'][clicked_box]
+                if bbox in param['selected_boxes']:
+                    param['selected_boxes'].remove(bbox)
+                    print(f"Deselected box {clicked_box + 1}")
+                else:
+                    param['selected_boxes'].append(bbox)
+                    print(f"Selected box {clicked_box + 1} as cyclist")
+            else:
+                # Start drawing a manual bounding box
+                self.drawing_box = True
+                self.box_start = (x, y)
+                self.current_box = None
+                param['drawing_box'] = True
+                param['box_start'] = (x, y)
+                param['current_box'] = None
+        
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if param.get('drawing_box', False) and param.get('box_start') is not None:
+                # Update current box while dragging
+                x1, y1 = param['box_start']
+                x2, y2 = x, y
+                self.current_box = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+                param['current_box'] = self.current_box
+        
+        elif event == cv2.EVENT_LBUTTONUP:
+            if param.get('drawing_box', False) and param.get('box_start') is not None:
+                # Finish drawing manual box
+                x1, y1 = param['box_start']
+                x2, y2 = x, y
+                # Only add if box has minimum size
+                if abs(x2 - x1) > 10 and abs(y2 - y1) > 10:
+                    manual_box = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
+                    if manual_box not in param['manual_boxes']:
+                        param['manual_boxes'].append(manual_box)
+                        print(f"Added manual bounding box: {manual_box}")
+                self.drawing_box = False
+                self.box_start = None
+                self.current_box = None
+                param['drawing_box'] = False
+                param['box_start'] = None
+                param['current_box'] = None
     
     def create_mask(self):
         """Create a binary mask from the polygon."""
@@ -328,7 +493,7 @@ class MovementDetector:
         
         return motion_detected, total_area, bounding_boxes
     
-    def filter_objects_by_tracking(self, bounding_boxes, frame_number):
+    def filter_objects_by_tracking(self, bounding_boxes, frame_number, speed_multiplier=1.0):
         """
         Filter objects by tracking them across frames. Objects that don't persist
         or move erratically are likely artifacts.
@@ -336,6 +501,7 @@ class MovementDetector:
         Args:
             bounding_boxes: List of (x, y, w, h, area, solidity, compactness) tuples
             frame_number: Current frame number
+            speed_multiplier: Playback speed multiplier (adjusts movement threshold for skipped frames)
         
         Returns:
             List of filtered bounding boxes (x, y, w, h) only
@@ -387,7 +553,9 @@ class MovementDetector:
                 x, y, w, h = obj['bbox']
                 
                 # Match if close enough and size is consistent
-                max_movement = max(w, h) * 2  # Allow movement up to 2x object size
+                # Scale movement threshold by speed multiplier to account for skipped frames
+                # When frames are skipped, objects can move further between processed frames
+                max_movement = max(w, h) * 2 * speed_multiplier  # Allow movement up to 2x object size * speed
                 if distance < max_movement and size_ratio < 2.0:
                     if distance < best_distance:
                         best_distance = distance
@@ -557,14 +725,15 @@ class MovementDetector:
         # Motion must be detected in all recent frames
         return all(self.motion_history)
     
-    def process_video(self, display=True, save_output=None, use_edge_refinement=False):
+    def process_video(self, display=True, save_output=None, use_edge_refinement=False, headless_scan=False):
         """
-        Process video and record movement timestamps.
+        Process video with dataset creation features.
         
         Args:
             display: Whether to display the video during processing
             save_output: Path to save output video (optional)
             use_edge_refinement: Use edge detection to refine bounding boxes
+            headless_scan: If True, scan in terminal with progress bar, only show GUI on detections
         """
         if not self.polygon_complete or self.mask is None:
             print("Error: No region selected. Please select a region first.")
@@ -577,28 +746,44 @@ class MovementDetector:
         self.object_tracks.clear()  # Reset object tracking
         self.next_track_id = 0
         
+        # Reset annotation state
+        self.selected_boxes = []
+        self.manual_boxes = []
+        self.drawing_box = False
+        self.box_start = None
+        self.current_box = None
+        
+        # Reset resume cooldown
+        self.resume_cooldown_counter = 0
+        
+        # Reset playback speed
+        self.playback_speed = 1.0
+        self.speed_index = 0
+        
         # Setup video writer if saving output
         out_writer = None
         if save_output:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out_writer = cv2.VideoWriter(save_output, fourcc, self.fps, (self.width, self.height))
         
-        print("\n=== Processing Video ===")
+        print("\n=== Dataset Creation Mode ===")
         print(f"Video: {self.video_path}")
         print(f"FPS: {self.fps:.2f}")
         print(f"Total frames: {self.total_frames}")
         print(f"Duration: {self.total_frames / self.fps:.2f} seconds")
+        print(f"Dataset directory: {self.dataset_dir}")
+        print(f"Auto-pause on motion: {'ENABLED' if self.auto_pause else 'DISABLED'}")
         if use_edge_refinement:
             print("Edge refinement: ENABLED")
         print(f"Temporal filtering: {self.temporal_frames} frames (motion must persist)")
-        print(f"Aspect ratio filter: {self.min_aspect_ratio:.1f} - {self.max_aspect_ratio:.1f}")
-        print(f"Object tracking: ENABLED (filters artifacts by persistence)")
-        print(f"Contour quality: ENABLED (solidity & compactness filtering)")
-        print(f"Adjacent artifact filter: ENABLED (removes small artifacts near larger objects)")
-        print(f"Spatial clustering: ENABLED (removes clustered artifacts, max {self.max_objects} objects)")
-        print(f"Contour quality thresholds: solidity > {self.min_solidity:.2f}, compactness > {self.min_compactness:.2f}")
-        print("\nControls:")
-        print("  Space: Pause/Resume (freezes frame with bounding boxes)")
+        print("\n=== Controls ===")
+        print("  Space: Pause/Resume")
+        print("  Left Click on box: Select/Deselect detected object as cyclist")
+        print("  Left Click + Drag: Draw manual bounding box")
+        print("  's': Save current frame with selected boxes and manual boxes")
+        print("  'c': Clear selected boxes and manual boxes")
+        print("  'f': Forward 10 frames")
+        print("  'b': Backward 10 frames")
         print("  'r': Reset to beginning")
         print("  'e': Toggle edge refinement")
         print("  'q': Quit")
@@ -607,12 +792,46 @@ class MovementDetector:
         frame_count = 0
         paused = False
         current_frame = None
-        paused_frame = None  # Store the paused frame with bounding boxes
+        paused_frame = None  # Store the paused frame (original, not display)
         paused_bounding_boxes = []  # Store bounding boxes when paused
         paused_display_motion = False  # Store motion state when paused
         
+        # Mouse callback parameters (use references to actual lists)
+        callback_params = {
+            'detected_boxes': [],
+            'selected_boxes': self.selected_boxes,  # Direct reference
+            'manual_boxes': self.manual_boxes,  # Direct reference
+            'drawing_box': False,  # Will be updated from self.drawing_box
+            'box_start': None,  # Will be updated from self.box_start
+            'current_box': None  # Will be updated from self.current_box
+        }
+        
+        window_name = "Dataset Creation - Movement Detection"
+        gui_initialized = False
+        
+        # Initialize progress bar for headless mode
+        progress_bar = None
+        if headless_scan and TQDM_AVAILABLE:
+            progress_bar = tqdm(total=self.total_frames, desc="Scanning", unit="frame", 
+                              bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        
+        # Terminal input handling for headless mode
+        terminal_continue_pending = False
+        
         while True:
             if not paused:
+                # Handle playback speed - skip frames when speed > 1x
+                # IMPORTANT: Still apply background subtractor to skipped frames to maintain background model
+                frames_to_skip = int(self.playback_speed) - 1
+                for _ in range(frames_to_skip):
+                    ret_skip, frame_skip = self.cap.read()
+                    if not ret_skip:
+                        break
+                    frame_count += 1
+                    # Apply background subtractor to skipped frames to maintain background model
+                    # This ensures the background model stays accurate even when skipping frames
+                    self.background_subtractor.apply(frame_skip)
+                
                 ret, frame = self.cap.read()
                 if not ret:
                     break
@@ -625,62 +844,95 @@ class MovementDetector:
                     frame, use_edge_refinement=use_edge_refinement
                 )
                 
-                # Apply object tracking filter - only keep objects that persist across frames
+                # Apply object tracking filter (pass speed multiplier to adjust for skipped frames)
                 if bounding_boxes:
-                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
-                    # Update motion detection based on filtered boxes
+                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count, self.playback_speed)
                     if not bounding_boxes:
                         motion_detected = False
                         motion_area = 0
                 
-                # Apply adjacent artifact filter - remove small artifacts near larger objects
+                # Apply adjacent artifact filter
                 if bounding_boxes and len(bounding_boxes) > 1:
                     bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes, size_ratio_threshold=0.3)
-                    # Update motion detection based on filtered boxes
                     if not bounding_boxes:
                         motion_detected = False
                         motion_area = 0
                 
-                # Apply spatial clustering filter - remove clustered artifacts
+                # Apply spatial clustering filter
                 if bounding_boxes:
                     bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
                                                                   min_distance_ratio=self.min_distance_ratio, 
                                                                   max_objects=self.max_objects)
-                    # Update motion detection based on filtered boxes
                     if not bounding_boxes:
                         motion_detected = False
                         motion_area = 0
                 
-                # Apply temporal filtering - motion must persist across multiple frames
+                # Apply temporal filtering
                 persistent_motion = self.check_temporal_consistency(motion_detected)
+                display_motion = persistent_motion
+                record_motion = persistent_motion
                 
-                # Only display and record bounding boxes when motion meets all criteria
-                # (temporal persistence, aspect ratio, area, tracking, etc.)
-                display_motion = persistent_motion  # Only show boxes if motion meets all criteria
-                record_motion = persistent_motion  # Only record if motion persists
+                # Increment resume cooldown counter when not paused
+                # Scale by playback speed so cooldown represents same video time at all speeds
+                if not paused:
+                    self.resume_cooldown_counter += self.playback_speed
+                
+                # Auto-pause on motion detection (only if cooldown has passed)
+                if (self.auto_pause and persistent_motion and not paused and 
+                    self.resume_cooldown_counter >= self.RESUME_COOLDOWN_FRAMES):
+                    paused = True
+                    paused_frame = current_frame.copy()
+                    paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                    paused_display_motion = display_motion
+                    # Reset selection state for new frame
+                    self.selected_boxes.clear()
+                    self.manual_boxes.clear()
+                    print(f"\n[MOTION DETECTED] Auto-paused at frame {frame_count} - Motion detected!")
+                    # Initialize GUI if in headless mode and detection occurs
+                    if headless_scan and not gui_initialized:
+                        cv2.namedWindow(window_name)
+                        cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
+                        gui_initialized = True
+                        print("GUI window opened for annotation. Press 'Enter' in terminal to continue after saving.")
+                
+                # Record timestamp if persistent motion detected (with cooldown)
+                if record_motion and (frame_count - self.last_movement_frame) > self.movement_cooldown:
+                    timestamp = frame_count / self.fps
+                    self.movement_timestamps.append({
+                        'frame': frame_count,
+                        'timestamp': timestamp,
+                        'timestamp_formatted': str(timedelta(seconds=int(timestamp))),
+                        'motion_area': motion_area,
+                        'bounding_boxes': bounding_boxes
+                    })
+                    self.last_movement_frame = frame_count
             else:
-                # When paused, use the stored paused frame and bounding boxes
+                # When paused, use the stored paused frame
                 if paused_frame is None:
                     break
                 frame = paused_frame.copy()
-                bounding_boxes = paused_bounding_boxes
+                bounding_boxes = paused_bounding_boxes.copy()
                 display_motion = paused_display_motion
-                record_motion = False  # Don't record when paused
+                record_motion = False
+                
+                # Update callback params with current boxes
+                callback_params['detected_boxes'] = bounding_boxes
+                # selected_boxes and manual_boxes are already references, no need to update
+                # But update drawing state to keep in sync
+                if self.drawing_box:
+                    callback_params['drawing_box'] = self.drawing_box
+                    callback_params['box_start'] = self.box_start
+                    callback_params['current_box'] = self.current_box
             
-            # Record timestamp if persistent motion detected (with cooldown)
-            if record_motion and (frame_count - self.last_movement_frame) > self.movement_cooldown:
-                timestamp = frame_count / self.fps
-                self.movement_timestamps.append({
-                    'frame': frame_count,
-                    'timestamp': timestamp,
-                    'timestamp_formatted': str(timedelta(seconds=int(timestamp))),
-                    'motion_area': motion_area,
-                    'bounding_boxes': bounding_boxes
-                })
-                self.last_movement_frame = frame_count
-                print(f"Movement detected at frame {frame_count} (time: {timestamp:.2f}s, area: {motion_area:.0f}, objects: {len(bounding_boxes)})")
+            # Update progress bar in headless mode
+            if headless_scan and progress_bar is not None and not paused:
+                progress_bar.update(1)
+                progress_bar.set_postfix({'detections': len(self.movement_timestamps), 'saved': self.saved_count})
             
-            if display or save_output:
+            # Skip rendering during headless scanning (only render when paused)
+            should_render = (display and (not headless_scan or paused)) or save_output
+            
+            if should_render:
                 # Create display frame
                 display_frame = frame.copy()
                 
@@ -692,14 +944,19 @@ class MovementDetector:
                     cv2.addWeighted(overlay, 0.3, display_frame, 0.7, 0, display_frame)
                     cv2.polylines(display_frame, [pts], True, (0, 255, 255), 2)
                 
-                # Draw bounding boxes around moving objects (only when motion is detected)
-                if display_motion:
+                # Draw detected bounding boxes
+                if display_motion and bounding_boxes:
                     for i, (x, y, w, h) in enumerate(bounding_boxes):
-                        # Draw rectangle
-                        cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                        # Check if this box is selected
+                        is_selected = (x, y, w, h) in self.selected_boxes
+                        color = (0, 255, 0) if is_selected else (255, 0, 0)  # Green if selected, blue otherwise
+                        thickness = 3 if is_selected else 2
                         
-                        # Draw label with object number
-                        label = f"Object {i+1}"
+                        # Draw rectangle
+                        cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, thickness)
+                        
+                        # Draw label
+                        label = f"Object {i+1}" + (" [SELECTED]" if is_selected else "")
                         label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                         label_y = max(y - 10, label_size[1] + 10)
                         
@@ -707,44 +964,69 @@ class MovementDetector:
                         cv2.rectangle(display_frame, 
                                     (x, label_y - label_size[1] - 5), 
                                     (x + label_size[0] + 5, label_y + 5), 
-                                    (255, 0, 0), -1)
+                                    color, -1)
                         
                         # Draw label text
                         cv2.putText(display_frame, label, (x + 2, label_y), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 
-                # Draw motion detection info
+                # Draw manual bounding boxes
+                for x, y, w, h in self.manual_boxes:
+                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
+                    cv2.putText(display_frame, "MANUAL", (x, y - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                
+                # Draw current box being drawn
+                current_drawing_box = callback_params.get('current_box') or self.current_box
+                if current_drawing_box is not None:
+                    x, y, w, h = current_drawing_box
+                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+                
+                # Draw status info
                 if paused:
-                    status_text = "PAUSED"
+                    status_text = "PAUSED - Annotate cyclists"
                     color = (0, 255, 255)  # Cyan for paused
                     cv2.putText(display_frame, status_text, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
                 else:
-                    status_text = "MOTION DETECTED!" if display_motion else "No motion"
-                    color = (0, 165, 255) if display_motion else (0, 255, 0)  # Orange when criteria met
+                    status_text = "MOTION DETECTED!" if display_motion else "Scanning..."
+                    color = (0, 165, 255) if display_motion else (0, 255, 0)
                     cv2.putText(display_frame, status_text, (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                
                 cv2.putText(display_frame, f"Frame: {frame_count}/{self.total_frames}", 
                            (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.putText(display_frame, f"Time: {frame_count/self.fps:.2f}s", 
                            (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(display_frame, f"Detections: {len(self.movement_timestamps)}", 
+                cv2.putText(display_frame, f"Saved: {self.saved_count} samples", 
                            (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                # Show object count (only when motion meets criteria)
-                if display_motion:
-                    cv2.putText(display_frame, f"Objects: {len(bounding_boxes)}", 
-                               (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                else:
-                    cv2.putText(display_frame, f"Objects: 0", 
-                               (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(display_frame, f"Selected: {len(self.selected_boxes)} | Manual: {len(self.manual_boxes)}", 
+                           (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                # Show playback speed
+                if not paused:
+                    speed_text = f"Speed: {self.playback_speed:.1f}x"
+                    cv2.putText(display_frame, speed_text, 
+                               (10, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                # Show resume cooldown status
+                if not paused and self.auto_pause:
+                    remaining = max(0, self.RESUME_COOLDOWN_FRAMES - self.resume_cooldown_counter)
+                    if remaining > 0:
+                        # Show remaining in frame-equivalents (accounting for speed)
+                        remaining_frames = int(remaining / self.playback_speed) if self.playback_speed > 0 else 0
+                        cv2.putText(display_frame, f"Cooldown: {remaining_frames} frames", 
+                                   (10, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 
                 if save_output:
                     cv2.putText(display_frame, "Recording...", (10, self.height - 20), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     out_writer.write(display_frame)
                 
-                if display:
-                    cv2.imshow("Movement Detection", display_frame)
+                if display and (not headless_scan or paused):
+                    if not gui_initialized:
+                        cv2.namedWindow(window_name)
+                        cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
+                        gui_initialized = True
+                    cv2.imshow(window_name, display_frame)
                     
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
@@ -752,17 +1034,96 @@ class MovementDetector:
                     elif key == ord(' '):
                         paused = not paused
                         if paused:
-                            # Store current frame with bounding boxes when pausing
-                            paused_frame = display_frame.copy()
+                            paused_frame = current_frame.copy() if current_frame is not None else frame.copy()
                             paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
                             paused_display_motion = display_motion
-                            print("Paused - Frame frozen with bounding boxes")
+                            self.selected_boxes.clear()
+                            self.manual_boxes.clear()
+                            print("Paused - Ready for annotation")
                         else:
-                            # Clear paused frame when resuming
                             paused_frame = None
                             paused_bounding_boxes = []
                             paused_display_motion = False
-                            print("Resumed")
+                            self.selected_boxes.clear()
+                            self.manual_boxes.clear()
+                            # Reset resume cooldown when manually resuming
+                            self.resume_cooldown_counter = 0
+                            # Calculate effective frames based on current speed
+                            effective_frames = int(self.RESUME_COOLDOWN_FRAMES / self.playback_speed) if self.playback_speed > 0 else self.RESUME_COOLDOWN_FRAMES
+                            print(f"Resumed scanning (will skip auto-pause for {effective_frames} frames at {self.playback_speed:.1f}x speed)")
+                            # In headless mode, hide GUI when resuming
+                            if headless_scan and gui_initialized:
+                                cv2.destroyWindow(window_name)
+                                gui_initialized = False
+                                print("GUI hidden. Scanning in background...")
+                    elif key == ord('s') and paused:
+                        # Save current frame with annotations
+                        all_boxes = self.selected_boxes + self.manual_boxes
+                        if all_boxes:
+                            self.save_frame_as_dataset(paused_frame, frame_count, all_boxes)
+                            # Clear selections after saving
+                            self.selected_boxes.clear()
+                            self.manual_boxes.clear()
+                            # In headless mode, allow continuing via terminal
+                            if headless_scan:
+                                print("Saved! Press 'Enter' in terminal to continue scanning, or 'q' to quit.")
+                        else:
+                            print("No boxes selected or drawn. Select boxes or draw manual boxes first.")
+                    elif key == ord('c') and paused:
+                        # Clear selections
+                        self.selected_boxes.clear()
+                        self.manual_boxes.clear()
+                        print("Cleared selections")
+                    elif key == ord('f') and paused:
+                        # Forward 10 frames
+                        new_frame = min(frame_count + 10, self.total_frames - 1)
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
+                        frame_count = new_frame
+                        ret, frame = self.cap.read()
+                        if ret:
+                            paused_frame = frame.copy()
+                            # Re-detect motion for new frame
+                            motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
+                                frame, use_edge_refinement=use_edge_refinement
+                            )
+                            if bounding_boxes:
+                                bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
+                                if bounding_boxes and len(bounding_boxes) > 1:
+                                    bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes)
+                                if bounding_boxes:
+                                    bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
+                                                                                  min_distance_ratio=self.min_distance_ratio, 
+                                                                                  max_objects=self.max_objects)
+                            paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                            paused_display_motion = motion_detected
+                            self.selected_boxes.clear()
+                            self.manual_boxes.clear()
+                            print(f"Jumped forward to frame {frame_count}")
+                    elif key == ord('b') and paused:
+                        # Backward 10 frames
+                        new_frame = max(frame_count - 10, 0)
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
+                        frame_count = new_frame
+                        ret, frame = self.cap.read()
+                        if ret:
+                            paused_frame = frame.copy()
+                            # Re-detect motion for new frame
+                            motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
+                                frame, use_edge_refinement=use_edge_refinement
+                            )
+                            if bounding_boxes:
+                                bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
+                                if bounding_boxes and len(bounding_boxes) > 1:
+                                    bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes)
+                                if bounding_boxes:
+                                    bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
+                                                                                  min_distance_ratio=self.min_distance_ratio, 
+                                                                                  max_objects=self.max_objects)
+                            paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                            paused_display_motion = motion_detected
+                            self.selected_boxes.clear()
+                            self.manual_boxes.clear()
+                            print(f"Jumped backward to frame {frame_count}")
                     elif key == ord('r'):
                         self.reset_video()
                         frame_count = 0
@@ -775,13 +1136,68 @@ class MovementDetector:
                         paused_display_motion = False
                         self.object_tracks.clear()
                         self.next_track_id = 0
+                        self.selected_boxes.clear()
+                        self.manual_boxes.clear()
+                        self.resume_cooldown_counter = 0
+                        self.playback_speed = 1.0
+                        self.speed_index = 0
                         print("Reset to beginning")
+                    elif key == ord('+') or key == ord('='):
+                        # Increase playback speed
+                        if self.speed_index < len(self.speed_multipliers) - 1:
+                            self.speed_index += 1
+                            self.playback_speed = self.speed_multipliers[self.speed_index]
+                            print(f"Playback speed: {self.playback_speed:.1f}x")
+                    elif key == ord('-') or key == ord('_'):
+                        # Decrease playback speed
+                        if self.speed_index > 0:
+                            self.speed_index -= 1
+                            self.playback_speed = self.speed_multipliers[self.speed_index]
+                            print(f"Playback speed: {self.playback_speed:.1f}x")
                     elif key == ord('e'):
                         use_edge_refinement = not use_edge_refinement
                         print(f"Edge refinement: {'ENABLED' if use_edge_refinement else 'DISABLED'}")
+            
+            # Handle terminal input in headless mode when paused
+            # When paused in headless mode, wait for user to press Enter in terminal
+            if headless_scan and paused and not terminal_continue_pending:
+                # Print prompt once
+                if not hasattr(self, '_prompt_shown'):
+                    print("\n[PAUSED] Press 'Enter' in terminal to continue scanning after annotation...")
+                    self._prompt_shown = True
+                
+                # Check for terminal input (non-blocking on Windows, blocking on Unix)
+                try:
+                    if sys.platform == 'win32':
+                        import msvcrt
+                        if msvcrt.kbhit():
+                            key = msvcrt.getch()
+                            if key == b'\r':  # Enter key
+                                terminal_continue_pending = True
+                    else:
+                        import select
+                        if select.select([sys.stdin], [], [], 0)[0]:
+                            user_input = sys.stdin.readline().strip().lower()
+                            if user_input == '' or user_input == 'c' or user_input == 'continue':
+                                terminal_continue_pending = True
+                except:
+                    pass
+            
+            if terminal_continue_pending and paused:
+                paused = False
+                terminal_continue_pending = False
+                self.resume_cooldown_counter = 0
+                if gui_initialized:
+                    cv2.destroyWindow(window_name)
+                    gui_initialized = False
+                self._prompt_shown = False
+                print("Continuing scan...")
         
-        if display:
+        if display and gui_initialized:
             cv2.destroyAllWindows()
+        
+        if progress_bar is not None:
+            progress_bar.close()
         
         if out_writer:
             out_writer.release()
@@ -789,6 +1205,8 @@ class MovementDetector:
         
         print(f"\n=== Processing Complete ===")
         print(f"Total movement events detected: {len(self.movement_timestamps)}")
+        print(f"Total dataset samples saved: {self.saved_count}")
+        print(f"Dataset saved to: {self.dataset_dir}")
         print("============================\n")
         
         return self.movement_timestamps
@@ -846,8 +1264,8 @@ def main():
                        help='Motion detection threshold (lower = more sensitive, default: 100)')
     parser.add_argument('--min-area', type=int, default=50,
                        help='Minimum area of motion to consider (default: 50)')
-    parser.add_argument('--edge-refinement', action='store_true',# default=True,
-                       help='Use edge detection to refine bounding boxes')
+    parser.add_argument('--no-edge-refinement', action='store_true',
+                       help='Disable edge detection refinement (enabled by default)')
     parser.add_argument('--save-video', type=str, default=None,
                        help='Path to save output video with bounding boxes (optional)')
     parser.add_argument('--temporal-frames', type=int, default=8,
@@ -864,6 +1282,12 @@ def main():
                        help='Minimum distance between objects as ratio of avg size (lower = allow closer, default: 0.4)')
     parser.add_argument('--max-objects', type=int, default=3,
                        help='Maximum number of objects to keep per frame (default: 3)')
+    parser.add_argument('--dataset-dir', type=str, default='pdx_cyclist_dataset',
+                       help='Directory to save dataset (default: pdx_cyclist_dataset)')
+    parser.add_argument('--no-auto-pause', action='store_true',
+                       help='Disable auto-pause on motion detection')
+    parser.add_argument('--headless-scan', action='store_true',
+                       help='Scan in terminal with progress bar, only show GUI on detections (saves IO/compute)')
     
     args = parser.parse_args()
     
@@ -878,7 +1302,9 @@ def main():
         min_solidity=args.min_solidity,
         min_compactness=args.min_compactness,
         min_distance_ratio=args.min_distance_ratio,
-        max_objects=args.max_objects
+        max_objects=args.max_objects,
+        dataset_dir=args.dataset_dir,
+        auto_pause=not args.no_auto_pause
     )
     
     # Select region
@@ -890,7 +1316,8 @@ def main():
     timestamps = detector.process_video(
         display=not args.no_display,
         save_output=args.save_video,
-        use_edge_refinement=args.edge_refinement
+        use_edge_refinement=not args.no_edge_refinement,
+        headless_scan=args.headless_scan
     )
     
     # Print results
