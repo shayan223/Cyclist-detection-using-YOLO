@@ -10,6 +10,7 @@
 *.mp4
 *.zip
 /Cyclist_Pedestrian_Dataset
+/pdx_cyclist_dataset
 Pedestrian_Detection/
 People_Detection/
 ECP*/
