@@ -3,9 +3,10 @@ from ultralytics import RTDETR
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = 'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
-MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model (options: rtdetr-l.pt, rtdetr-x.pt)
-EPOCHS = 100
+CONFIG_FILE_PATH = 'pdx_cyclist_dataset/data.yaml'#'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
+#MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model (options: rtdetr-l.pt, rtdetr-x.pt) USE THIS FOR FIRST TIME TRAINING
+MODEL_PATH = './cyclist_detection_rtdetr/rtdetr_finetune4/weights/best.pt' # pre-finetuned model on cyclist dataset, for further fine tuning on pdx dataset  
+EPOCHS = 10
 BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -66,8 +67,8 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
         device=device,
         patience=5,  # Stop training early if no improvement
         save_period=5,  # Save model after each epoch
-        project="cyclist_detection_rtdetr",
-        name="rtdetr_finetune",
+        project="pdx_rtdetr",
+        name="pdx_rtdetr_finetune",
         resume=False,
         # Data augmentation parameters
         hsv_h=hsv_h,

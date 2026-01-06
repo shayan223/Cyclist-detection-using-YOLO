@@ -6,10 +6,10 @@ import torch
 import numpy as np
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'rtdetr_finetune3'#'yolo_finetune2'
+EXPERIMENT_NAME =  'pdx_rtdetr_finetune2'#'rtdetr_finetune4'#'rtdetr_finetune4'#'yolo_finetune2'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 BATCH = 8
-DEFAULT_MODEL_PATH = './cyclist_detection_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = './pdx_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
@@ -251,7 +251,7 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_analyzed.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.6, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     
     args = parser.parse_args()

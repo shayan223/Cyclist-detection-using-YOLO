@@ -7,11 +7,11 @@ import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'rtdetr_finetune3'#'yolo_finetune'
+EXPERIMENT_NAME = 'pdx_rtdetr_finetune2'#'rtdetr_finetune4'#'yolo_finetune'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 #MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
-DEFAULT_MODEL_PATH = './cyclist_detection_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = './pdx_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
@@ -324,7 +324,7 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_tracked.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--max-age', type=int, default=5, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
