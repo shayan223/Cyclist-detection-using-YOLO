@@ -98,11 +98,12 @@ class MovementDetector:
         self.movement_cooldown = int(self.fps * 0.5)  # 0.5 seconds cooldown between detections
         
         # Dataset annotation state
-        self.selected_boxes = []  # Selected bounding boxes for current frame
-        self.manual_boxes = []  # Manually drawn bounding boxes
+        self.selected_boxes = []  # Selected bounding boxes for current frame: [(x, y, w, h, class_id), ...]
+        self.manual_boxes = []  # Manually drawn bounding boxes: [(x, y, w, h, class_id), ...]
         self.drawing_box = False  # Whether currently drawing a manual box
         self.box_start = None  # Start point for manual box
         self.current_box = None  # Current box being drawn
+        self.current_class = 0  # Current annotation class: 0 = cyclist, 1 = pedestrian
         
         # Resume cooldown - prevent auto-pause for N frames after resuming
         self.RESUME_COOLDOWN_FRAMES = 100
@@ -113,41 +114,95 @@ class MovementDetector:
         self.speed_multipliers = [1.0, 2.0, 4.0, 8.0, 16.0]  # Available speed options
         self.speed_index = 0  # Current index in speed_multipliers
         
+        # Display scaling for larger window
+        self.display_scale = 1.5  # Scale factor for display (1.5x = 50% larger)
+        
     def get_next_file_number(self):
-        """Get the next available file number by checking existing files."""
-        if not self.dataset_images_dir.exists():
-            return 0
+        """Get the next available file number by checking existing files across all splits.
         
-        # Find all existing frame files
-        existing_files = list(self.dataset_images_dir.glob("frame_*.jpg"))
-        if not existing_files:
-            return 0
-        
-        # Extract numbers from filenames and find the maximum
+        Checks train, valid, and test directories to ensure no duplicate file numbers
+        even if files have been moved to different splits.
+        """
         max_num = -1
-        for file in existing_files:
-            try:
-                # Extract number from filename like "frame_00000123.jpg"
-                num_str = file.stem.split('_')[1]  # Get "00000123"
-                num = int(num_str)
-                max_num = max(max_num, num)
-            except (ValueError, IndexError):
+        
+        # Check all possible split directories (train, valid, test)
+        # This ensures we don't reuse numbers even if files were moved to other splits
+        for split_name in ["train", "valid", "test"]:
+            split_images_dir = self.dataset_dir / split_name / "images"
+            if not split_images_dir.exists():
                 continue
+            
+            # Find all existing frame files in this split
+            existing_files = list(split_images_dir.glob("frame_*.jpg"))
+            
+            # Extract numbers from filenames and find the maximum
+            for file in existing_files:
+                try:
+                    # Extract number from filename like "frame_00000123.jpg"
+                    num_str = file.stem.split('_')[1]  # Get "00000123"
+                    num = int(num_str)
+                    max_num = max(max_num, num)
+                except (ValueError, IndexError):
+                    continue
         
         return max_num + 1
     
     def create_data_yaml(self):
-        """Create data.yaml file for YOLO dataset."""
+        """Create or update data.yaml file for YOLO dataset.
+        
+        Preserves existing train/val/test paths if data.yaml already exists
+        (e.g., after dataset split), only updating class names if needed.
+        """
         yaml_path = self.dataset_dir / "data.yaml"
-        yaml_content = """names:
-- cyclist
-nc: 1
-train: train/images
-val: train/images
-"""
+        
+        # Default paths
+        train_path = "train/images"
+        val_path = None
+        test_path = None
+        
+        # Check if data.yaml already exists (e.g., after split)
+        # Try to preserve existing paths by parsing the file
+        if yaml_path.exists():
+            try:
+                with open(yaml_path, 'r') as f:
+                    content = f.read()
+                    # Simple parsing to extract paths (works even without yaml module)
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('train:'):
+                            train_path = line.split(':', 1)[1].strip()
+                        elif line.startswith('val:'):
+                            val_path = line.split(':', 1)[1].strip()
+                        elif line.startswith('test:'):
+                            test_path = line.split(':', 1)[1].strip()
+            except Exception:
+                # If file exists but can't be read, use defaults
+                pass
+        
+        # Build YAML content
+        yaml_lines = [
+            "names:",
+            "- cyclist",
+            "- pedestrian",
+            "nc: 2",
+            f"train: {train_path}",
+        ]
+        
+        # Add val/test paths if they exist in the original file
+        if val_path:
+            yaml_lines.append(f"val: {val_path}")
+        if test_path:
+            yaml_lines.append(f"test: {test_path}")
+        
+        yaml_content = "\n".join(yaml_lines) + "\n"
+        
         with open(yaml_path, 'w') as f:
             f.write(yaml_content)
-        print(f"Created dataset config at: {yaml_path}")
+        
+        if yaml_path.exists() and (val_path or test_path):
+            print(f"Updated dataset config at: {yaml_path} (preserved existing split paths)")
+        else:
+            print(f"Created dataset config at: {yaml_path}")
     
     def reset_video(self):
         """Reset video to beginning."""
@@ -178,7 +233,13 @@ val: train/images
         return center_x, center_y, width, height
     
     def save_frame_as_dataset(self, frame, frame_number, bounding_boxes):
-        """Save frame and annotations in YOLO format."""
+        """Save frame and annotations in YOLO format.
+        
+        Args:
+            frame: Frame image to save
+            frame_number: Frame number
+            bounding_boxes: List of (x, y, w, h, class_id) tuples, or (x, y, w, h) tuples (defaults to class 0)
+        """
         # Generate unique filename using sequential numbering across all videos
         filename = f"frame_{self.next_file_number:08d}.jpg"
         image_path = self.dataset_images_dir / filename
@@ -187,16 +248,35 @@ val: train/images
         # Save image
         cv2.imwrite(str(image_path), frame)
         
-        # Save labels (class 0 = cyclist)
+        # Save labels (class 0 = cyclist, class 1 = pedestrian)
+        cyclist_count = 0
+        pedestrian_count = 0
         with open(label_path, 'w') as f:
             for bbox in bounding_boxes:
-                x, y, w, h = bbox[:4]  # Get first 4 elements (x, y, w, h)
+                # Handle both (x, y, w, h) and (x, y, w, h, class_id) formats
+                if len(bbox) >= 5:
+                    x, y, w, h, class_id = bbox[:5]
+                else:
+                    x, y, w, h = bbox[:4]
+                    class_id = 0  # Default to cyclist for backward compatibility
+                
                 center_x, center_y, width, height = self.bbox_to_yolo(x, y, w, h, self.width, self.height)
-                f.write(f"0 {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}\n")
+                f.write(f"{class_id} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}\n")
+                
+                if class_id == 0:
+                    cyclist_count += 1
+                elif class_id == 1:
+                    pedestrian_count += 1
         
         self.saved_count += 1
         self.next_file_number += 1  # Increment for next file
-        print(f"Saved frame {frame_number} as dataset sample #{self.saved_count} ({len(bounding_boxes)} cyclists) -> {filename}")
+        class_info = []
+        if cyclist_count > 0:
+            class_info.append(f"{cyclist_count} cyclist{'s' if cyclist_count > 1 else ''}")
+        if pedestrian_count > 0:
+            class_info.append(f"{pedestrian_count} pedestrian{'s' if pedestrian_count > 1 else ''}")
+        class_str = ", ".join(class_info) if class_info else "0 objects"
+        print(f"Saved frame {frame_number} as dataset sample #{self.saved_count} ({class_str}) -> {filename}")
         return image_path, label_path
         
     def draw_polygon_callback(self, event, x, y, flags, param):
@@ -212,38 +292,56 @@ val: train/images
                 print("Polygon complete! Right-click again to reset, or press 'c' to confirm.")
     
     def annotation_callback(self, event, x, y, flags, param):
-        """Mouse callback for annotation mode (clicking boxes and drawing manual boxes)."""
+        """Mouse callback for annotation mode (clicking boxes and drawing manual boxes).
+        Note: Coordinates are in display space (scaled), need to convert back to original.
+        """
+        # Convert display coordinates back to original frame coordinates
+        scale = param.get('display_scale', 1.0)
+        orig_x = int(x / scale)
+        orig_y = int(y / scale)
+        
         if event == cv2.EVENT_LBUTTONDOWN:
             # Check if clicking on a detected bounding box
             clicked_box = None
             for i, (bx, by, bw, bh) in enumerate(param['detected_boxes']):
-                if bx <= x <= bx + bw and by <= y <= by + bh:
+                if bx <= orig_x <= bx + bw and by <= orig_y <= by + bh:
                     clicked_box = i
                     break
             
             if clicked_box is not None:
                 # Toggle selection of this box
                 bbox = param['detected_boxes'][clicked_box]
-                if bbox in param['selected_boxes']:
-                    param['selected_boxes'].remove(bbox)
-                    print(f"Deselected box {clicked_box + 1}")
+                # Check if already selected (with any class)
+                selected_bbox_tuple = None
+                for sel_bbox in param['selected_boxes']:
+                    if len(sel_bbox) >= 4 and sel_bbox[:4] == bbox[:4]:
+                        selected_bbox_tuple = sel_bbox
+                        break
+                
+                if selected_bbox_tuple is not None:
+                    param['selected_boxes'].remove(selected_bbox_tuple)
+                    class_name = "cyclist" if (len(selected_bbox_tuple) < 5 or selected_bbox_tuple[4] == 0) else "pedestrian"
+                    print(f"Deselected box {clicked_box + 1} ({class_name})")
                 else:
-                    param['selected_boxes'].append(bbox)
-                    print(f"Selected box {clicked_box + 1} as cyclist")
+                    # Add with current class
+                    bbox_with_class = (bbox[0], bbox[1], bbox[2], bbox[3], param.get('current_class', 0))
+                    param['selected_boxes'].append(bbox_with_class)
+                    class_name = "cyclist" if param.get('current_class', 0) == 0 else "pedestrian"
+                    print(f"Selected box {clicked_box + 1} as {class_name}")
             else:
                 # Start drawing a manual bounding box
                 self.drawing_box = True
-                self.box_start = (x, y)
+                self.box_start = (orig_x, orig_y)
                 self.current_box = None
                 param['drawing_box'] = True
-                param['box_start'] = (x, y)
+                param['box_start'] = (orig_x, orig_y)
                 param['current_box'] = None
         
         elif event == cv2.EVENT_MOUSEMOVE:
             if param.get('drawing_box', False) and param.get('box_start') is not None:
                 # Update current box while dragging
                 x1, y1 = param['box_start']
-                x2, y2 = x, y
+                x2, y2 = orig_x, orig_y
                 self.current_box = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
                 param['current_box'] = self.current_box
         
@@ -251,13 +349,20 @@ val: train/images
             if param.get('drawing_box', False) and param.get('box_start') is not None:
                 # Finish drawing manual box
                 x1, y1 = param['box_start']
-                x2, y2 = x, y
+                x2, y2 = orig_x, orig_y
                 # Only add if box has minimum size
                 if abs(x2 - x1) > 10 and abs(y2 - y1) > 10:
-                    manual_box = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1))
-                    if manual_box not in param['manual_boxes']:
+                    manual_box = (min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1), param.get('current_class', 0))
+                    # Check if already exists (same coordinates)
+                    exists = False
+                    for existing in param['manual_boxes']:
+                        if len(existing) >= 4 and existing[:4] == manual_box[:4]:
+                            exists = True
+                            break
+                    if not exists:
                         param['manual_boxes'].append(manual_box)
-                        print(f"Added manual bounding box: {manual_box}")
+                        class_name = "cyclist" if param.get('current_class', 0) == 0 else "pedestrian"
+                        print(f"Added manual bounding box as {class_name}: {manual_box[:4]}")
                 self.drawing_box = False
                 self.box_start = None
                 self.current_box = None
@@ -774,6 +879,7 @@ val: train/images
         self.drawing_box = False
         self.box_start = None
         self.current_box = None
+        self.current_class = 0  # Reset to cyclist
         
         # Reset resume cooldown
         self.resume_cooldown_counter = 0
@@ -800,8 +906,9 @@ val: train/images
         print(f"Temporal filtering: {self.temporal_frames} frames (motion must persist)")
         print("\n=== Controls ===")
         print("  Space: Pause/Resume")
-        print("  Left Click on box: Select/Deselect detected object as cyclist")
+        print("  Left Click on box: Select/Deselect detected object")
         print("  Left Click + Drag: Draw manual bounding box")
+        print("  't': Toggle annotation class (cyclist/pedestrian)")
         print("  's': Save current frame with selected boxes and manual boxes")
         print("  'c': Clear selected boxes and manual boxes")
         print("  'f': Forward 10 frames")
@@ -826,7 +933,9 @@ val: train/images
             'manual_boxes': self.manual_boxes,  # Direct reference
             'drawing_box': False,  # Will be updated from self.drawing_box
             'box_start': None,  # Will be updated from self.box_start
-            'current_box': None  # Will be updated from self.current_box
+            'current_box': None,  # Will be updated from self.current_box
+            'display_scale': self.display_scale,  # Display scale for coordinate conversion
+            'current_class': self.current_class  # Current annotation class
         }
         
         window_name = "Dataset Creation - Movement Detection"
@@ -846,33 +955,22 @@ val: train/images
         
         while True:
             if not paused:
-                # Handle playback speed - skip frames when speed > 1x
-                # IMPORTANT: Still apply background subtractor to skipped frames to maintain background model
-                frames_to_skip = int(self.playback_speed) - 1
-                for _ in range(frames_to_skip):
-                    ret_skip, frame_skip = self.cap.read()
-                    if not ret_skip:
-                        break
-                    frame_count += 1
-                    # Apply background subtractor to skipped frames to maintain background model
-                    # This ensures the background model stays accurate even when skipping frames
-                    self.background_subtractor.apply(frame_skip)
-                
+                # Process every frame for accurate motion detection (don't skip frames)
+                # This ensures temporal consistency works correctly regardless of playback speed
                 ret, frame = self.cap.read()
                 if not ret:
                     break
                 frame_count += 1
                 self.current_frame_number = frame_count
-                current_frame = frame.copy()
                 
-                # Detect motion and get bounding boxes
+                # Detect motion and get bounding boxes (process every frame)
                 motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
                     frame, use_edge_refinement=use_edge_refinement
                 )
                 
-                # Apply object tracking filter (pass speed multiplier to adjust for skipped frames)
+                # Apply object tracking filter
                 if bounding_boxes:
-                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count, self.playback_speed)
+                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count, 1.0)
                     if not bounding_boxes:
                         motion_detected = False
                         motion_area = 0
@@ -898,6 +996,18 @@ val: train/images
                 display_motion = persistent_motion
                 record_motion = persistent_motion
                 
+                # Handle playback speed - only update display at specified speed
+                # Process all frames for detection, but only display every Nth frame when speed > 1x
+                should_display_this_frame = True
+                if self.playback_speed > 1.0:
+                    # Only display frames that match the speed interval
+                    # For 2x speed: display frames 2, 4, 6, 8...
+                    # For 4x speed: display frames 4, 8, 12, 16...
+                    should_display_this_frame = (frame_count % int(self.playback_speed) == 0)
+                
+                # Store frame for display
+                current_frame = frame.copy()
+                
                 # Increment resume cooldown counter when not paused
                 # Scale by playback speed so cooldown represents same video time at all speeds
                 if not paused:
@@ -916,7 +1026,11 @@ val: train/images
                     print(f"\n[MOTION DETECTED] Auto-paused at frame {frame_count} - Motion detected!")
                     # Initialize GUI if in headless mode and detection occurs
                     if headless_scan and not gui_initialized:
-                        cv2.namedWindow(window_name)
+                        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                        # Set initial window size (scaled)
+                        scaled_width = int(self.width * self.display_scale)
+                        scaled_height = int(self.height * self.display_scale)
+                        cv2.resizeWindow(window_name, scaled_width, scaled_height)
                         cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
                         gui_initialized = True
                         print("GUI window opened for annotation. Press 'Enter' in terminal to continue after saving.")
@@ -940,9 +1054,11 @@ val: train/images
                 bounding_boxes = paused_bounding_boxes.copy()
                 display_motion = paused_display_motion
                 record_motion = False
+                should_display_this_frame = True  # Always display when paused
                 
                 # Update callback params with current boxes
                 callback_params['detected_boxes'] = bounding_boxes
+                callback_params['current_class'] = self.current_class  # Update current class
                 # selected_boxes and manual_boxes are already references, no need to update
                 # But update drawing state to keep in sync
                 if self.drawing_box:
@@ -956,7 +1072,8 @@ val: train/images
                 progress_bar.set_postfix({'detections': len(self.movement_timestamps), 'saved': self.saved_count})
             
             # Skip rendering during headless scanning (only render when paused)
-            should_render = (display and (not headless_scan or paused)) or save_output
+            # Also skip rendering if this frame shouldn't be displayed due to playback speed
+            should_render = ((display and (not headless_scan or paused)) or save_output) and should_display_this_frame
             
             if should_render:
                 # Create display frame
@@ -973,66 +1090,101 @@ val: train/images
                 # Draw detected bounding boxes
                 if display_motion and bounding_boxes:
                     for i, (x, y, w, h) in enumerate(bounding_boxes):
-                        # Check if this box is selected
-                        is_selected = (x, y, w, h) in self.selected_boxes
-                        color = (0, 255, 0) if is_selected else (255, 0, 0)  # Green if selected, blue otherwise
+                        # Check if this box is selected and get its class
+                        is_selected = False
+                        box_class = 0  # Default to cyclist
+                        for sel_bbox in self.selected_boxes:
+                            if len(sel_bbox) >= 4 and sel_bbox[:4] == (x, y, w, h):
+                                is_selected = True
+                                if len(sel_bbox) >= 5:
+                                    box_class = sel_bbox[4]
+                                break
+                        
+                        # Color coding: Green for cyclist, Magenta for pedestrian
+                        if is_selected:
+                            color = (0, 255, 0) if box_class == 0 else (255, 0, 255)  # Green for cyclist, Magenta for pedestrian
+                        else:
+                            color = (255, 0, 0)  # Blue for unselected
                         thickness = 3 if is_selected else 2
                         
                         # Draw rectangle
                         cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, thickness)
                         
                         # Draw label
-                        label = f"Object {i+1}" + (" [SELECTED]" if is_selected else "")
-                        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                        label_y = max(y - 10, label_size[1] + 10)
+                        class_name = "cyclist" if box_class == 0 else "pedestrian"
+                        label = f"Object {i+1}" + (f" [{class_name.upper()}]" if is_selected else "")
+                        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                        label_y = max(y - 5, label_size[1] + 5)
                         
                         # Draw label background
                         cv2.rectangle(display_frame, 
-                                    (x, label_y - label_size[1] - 5), 
-                                    (x + label_size[0] + 5, label_y + 5), 
+                                    (x, label_y - label_size[1] - 2), 
+                                    (x + label_size[0] + 3, label_y + 2), 
                                     color, -1)
                         
                         # Draw label text
-                        cv2.putText(display_frame, label, (x + 2, label_y), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                        cv2.putText(display_frame, label, (x + 1, label_y), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 
-                # Draw manual bounding boxes
-                for x, y, w, h in self.manual_boxes:
-                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
-                    cv2.putText(display_frame, "MANUAL", (x, y - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                # Draw manual bounding boxes with class colors
+                for manual_bbox in self.manual_boxes:
+                    if len(manual_bbox) >= 5:
+                        x, y, w, h, box_class = manual_bbox[:5]
+                    else:
+                        x, y, w, h = manual_bbox[:4]
+                        box_class = 0  # Default to cyclist
+                    
+                    # Color: Cyan for cyclist, Yellow for pedestrian
+                    color = (255, 255, 0) if box_class == 0 else (0, 255, 255)  # Cyan for cyclist, Yellow for pedestrian
+                    class_name = "CYCLIST" if box_class == 0 else "PEDESTRIAN"
+                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
+                    cv2.putText(display_frame, f"MANUAL {class_name}", (x, y - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                 
-                # Draw current box being drawn
+                # Draw current box being drawn (with current class color)
                 current_drawing_box = callback_params.get('current_box') or self.current_box
                 if current_drawing_box is not None:
                     x, y, w, h = current_drawing_box
-                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+                    # Color based on current class: Cyan for cyclist, Yellow for pedestrian
+                    draw_color = (255, 255, 0) if self.current_class == 0 else (0, 255, 255)
+                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), draw_color, 2)
                 
-                # Draw status info
+                # Draw status info (smaller font, full labels)
                 if paused:
-                    status_text = "PAUSED - Annotate cyclists"
+                    current_class_name = "cyclist" if self.current_class == 0 else "pedestrian"
+                    status_text = f"PAUSED - Annotate {current_class_name}s"
                     color = (0, 255, 255)  # Cyan for paused
-                    cv2.putText(display_frame, status_text, (10, 30), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                    cv2.putText(display_frame, status_text, (10, 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 else:
                     status_text = "MOTION DETECTED!" if display_motion else "Scanning..."
                     color = (0, 165, 255) if display_motion else (0, 255, 0)
-                    cv2.putText(display_frame, status_text, (10, 30), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                    cv2.putText(display_frame, status_text, (10, 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 
                 cv2.putText(display_frame, f"Frame: {frame_count}/{self.total_frames}", 
-                           (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                           (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 cv2.putText(display_frame, f"Time: {frame_count/self.fps:.2f}s", 
-                           (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                           (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 cv2.putText(display_frame, f"Saved: {self.saved_count} samples", 
-                           (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(display_frame, f"Selected: {len(self.selected_boxes)} | Manual: {len(self.manual_boxes)}", 
-                           (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                           (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                # Count boxes by class
+                cyclist_selected = sum(1 for bbox in self.selected_boxes if len(bbox) < 5 or bbox[4] == 0)
+                pedestrian_selected = sum(1 for bbox in self.selected_boxes if len(bbox) >= 5 and bbox[4] == 1)
+                cyclist_manual = sum(1 for bbox in self.manual_boxes if len(bbox) < 5 or bbox[4] == 0)
+                pedestrian_manual = sum(1 for bbox in self.manual_boxes if len(bbox) >= 5 and bbox[4] == 1)
+                cv2.putText(display_frame, f"Selected: {cyclist_selected}C/{pedestrian_selected}P | Manual: {cyclist_manual}C/{pedestrian_manual}P", 
+                           (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                # Show current annotation class
+                current_class_name = "CYCLIST" if self.current_class == 0 else "PEDESTRIAN"
+                class_color = (0, 255, 0) if self.current_class == 0 else (255, 0, 255)
+                cv2.putText(display_frame, f"Class: {current_class_name} (Press 't' to toggle)", 
+                           (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.4, class_color, 1)
                 # Show playback speed
                 if not paused:
                     speed_text = f"Speed: {self.playback_speed:.1f}x"
                     cv2.putText(display_frame, speed_text, 
-                               (10, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                               (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
                 # Show resume cooldown status
                 if not paused and self.auto_pause:
                     remaining = max(0, self.RESUME_COOLDOWN_FRAMES - self.resume_cooldown_counter)
@@ -1040,19 +1192,30 @@ val: train/images
                         # Show remaining in frame-equivalents (accounting for speed)
                         remaining_frames = int(remaining / self.playback_speed) if self.playback_speed > 0 else 0
                         cv2.putText(display_frame, f"Cooldown: {remaining_frames} frames", 
-                                   (10, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                                   (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
                 if save_output:
-                    cv2.putText(display_frame, "Recording...", (10, self.height - 20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(display_frame, "Recording...", (10, self.height - 15), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     out_writer.write(display_frame)
                 
                 if display and (not headless_scan or paused):
                     if not gui_initialized:
-                        cv2.namedWindow(window_name)
+                        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                        # Set initial window size (scaled)
+                        scaled_width = int(self.width * self.display_scale)
+                        scaled_height = int(self.height * self.display_scale)
+                        cv2.resizeWindow(window_name, scaled_width, scaled_height)
                         cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
                         gui_initialized = True
-                    cv2.imshow(window_name, display_frame)
+                    
+                    # Update callback params to ensure current_class is always up to date
+                    callback_params['current_class'] = self.current_class
+                    
+                    # Scale display frame for larger window
+                    scaled_frame = cv2.resize(display_frame, None, fx=self.display_scale, fy=self.display_scale, 
+                                             interpolation=cv2.INTER_LINEAR)
+                    cv2.imshow(window_name, scaled_frame)
                     
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
@@ -1100,6 +1263,12 @@ val: train/images
                         self.selected_boxes.clear()
                         self.manual_boxes.clear()
                         print("Cleared selections")
+                    elif key == ord('t'):
+                        # Toggle annotation class (cyclist <-> pedestrian)
+                        self.current_class = 1 - self.current_class  # Toggle between 0 and 1
+                        callback_params['current_class'] = self.current_class
+                        class_name = "cyclist" if self.current_class == 0 else "pedestrian"
+                        print(f"Switched annotation class to: {class_name}")
                     elif key == ord('f') and paused:
                         # Forward 10 frames
                         new_frame = min(frame_count + 10, self.total_frames - 1)
