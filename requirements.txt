@@ -1,0 +1,22 @@
+# Core computer vision and deep learning
+opencv-python>=4.8.0
+numpy>=1.24.0
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.0.0
+
+# Data processing and visualization
+matplotlib>=3.7.0
+pyyaml>=6.0
+
+# Object tracking
+deep-sort-realtime>=1.3.0
+
+# Video processing
+yt-dlp>=2023.7.0
+
+# Progress bars
+tqdm>=4.65.0
+
+# Image processing (if needed for PIL operations)
+Pillow>=10.0.0
