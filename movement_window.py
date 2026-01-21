@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 import sys
 import threading
+import csv
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
@@ -117,6 +118,10 @@ class MovementDetector:
         # Display scaling for larger window
         self.display_scale = 1.5  # Scale factor for display (1.5x = 50% larger)
         
+        # Timestamp navigation (for CSV mode)
+        self.timestamp_list = []  # List of timestamps to navigate: [(frame, timestamp_seconds), ...]
+        self.current_timestamp_index = -1  # Current index in timestamp_list (-1 = not in timestamp mode)
+        
     def get_next_file_number(self):
         """Get the next available file number by checking existing files across all splits.
         
@@ -223,6 +228,294 @@ class MovementDetector:
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
         self.current_frame_number = target_frame
         return target_frame
+    
+    def parse_timestamp_value(self, value_str):
+        """
+        Parse a timestamp value from various formats.
+        
+        Supports:
+        - Time format: "H:MM:SS" or "HH:MM:SS" (hours:minutes:seconds)
+        - Time format: "MM:SS" (minutes:seconds)
+        - Numeric: seconds as float (e.g., "123.45")
+        - Numeric: frame number as int (e.g., "1500")
+        
+        Args:
+            value_str: String value to parse
+            
+        Returns:
+            tuple: (timestamp_seconds, is_frame_number)
+                   is_frame_number is True if value was interpreted as frame number
+        """
+        value_str = str(value_str).strip()
+        
+        # Try parsing as time format (H:MM:SS or MM:SS)
+        if ':' in value_str:
+            parts = value_str.split(':')
+            # Strip whitespace from each part
+            parts = [p.strip() for p in parts]
+            
+            if len(parts) == 3:
+                # Format: H:MM:SS or HH:MM:SS
+                try:
+                    hours = int(parts[0])
+                    minutes = int(parts[1])
+                    seconds = float(parts[2])
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+                    return (total_seconds, False)
+                except (ValueError, IndexError) as e:
+                    # If time parsing fails, continue to numeric parsing
+                    pass
+            elif len(parts) == 2:
+                # Format: MM:SS
+                try:
+                    minutes = int(parts[0])
+                    seconds = float(parts[1])
+                    total_seconds = minutes * 60 + seconds
+                    return (total_seconds, False)
+                except (ValueError, IndexError) as e:
+                    # If time parsing fails, continue to numeric parsing
+                    pass
+        
+        # Try parsing as numeric value (only if it doesn't contain ':' since that's already handled)
+        if ':' not in value_str:
+            try:
+                value = float(value_str)
+                # Determine if it's a frame number or timestamp in seconds
+                # If value > total_frames, assume it's seconds, otherwise assume frames
+                if value > self.total_frames:
+                    # It's a timestamp in seconds
+                    return (value, False)
+                else:
+                    # It's a frame number
+                    return (value, True)
+            except ValueError:
+                pass
+        
+        # If we get here, we couldn't parse it
+        raise ValueError(f"Could not parse timestamp value: '{value_str}'. Expected format: H:MM:SS, MM:SS, or numeric value.")
+    
+    def load_timestamps_from_csv(self, csv_path):
+        """
+        Load timestamps from a CSV file.
+        
+        CSV format can be:
+        - With header: A column named 'timestamp', 'time', 't', 'frame', or 'frame_number'
+        - Without header: First column contains timestamps
+        - Timestamps can be in:
+          * Time format: "H:MM:SS" or "HH:MM:SS" (e.g., "7:51:02", "4:59:51")
+          * Time format: "MM:SS" (e.g., "51:02")
+          * Seconds as float (e.g., "123.45")
+          * Frame numbers as int (e.g., "1500")
+        
+        Args:
+            csv_path: Path to CSV file
+            
+        Returns:
+            List of (frame_number, timestamp_seconds) tuples, sorted by frame
+        """
+        timestamps = []
+        
+        try:
+            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+                # Read first few lines to determine format
+                lines = []
+                for i, line in enumerate(f):
+                    lines.append(line.strip())
+                    if i >= 2:  # Read first 3 lines
+                        break
+                f.seek(0)
+                
+                # Check if first line looks like a header (contains common header words)
+                has_header = False
+                if lines:
+                    first_line = lines[0].lower()
+                    header_keywords = ['timestamp', 'time', 'frame', 't', 'date', 'id']
+                    has_header = any(keyword in first_line for keyword in header_keywords)
+                
+                # Check if values contain colons (time format) - if so, don't use colon as delimiter
+                # Try to detect delimiter, but avoid colon if values contain colons
+                sample = f.read(1024)
+                f.seek(0)
+                sniffer = csv.Sniffer()
+                detected_delimiter = sniffer.sniff(sample).delimiter
+                
+                # If detected delimiter is colon and values contain colons, colon is part of data, not delimiter
+                delimiter = detected_delimiter
+                if detected_delimiter == ':' and lines and not has_header:
+                    # Check if values look like time format (contain colons in H:MM:SS or MM:SS format)
+                    if any(':' in line and (line.count(':') == 1 or line.count(':') == 2) for line in lines):
+                        # Values contain colons in time format, so colon is part of the data, not delimiter
+                        # Try comma or tab as delimiter, or read line by line
+                        if any(',' in line for line in lines):
+                            delimiter = ','
+                        elif any('\t' in line for line in lines):
+                            delimiter = '\t'
+                        else:
+                            # No other delimiter found, read entire line (no delimiter)
+                            delimiter = None
+                
+                if has_header:
+                    # Use DictReader for files with headers
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    
+                    # Find the timestamp column
+                    timestamp_col = None
+                    for col_name in ['timestamp', 'time', 't', 'frame', 'frame_number', 'frame_num']:
+                        if col_name in reader.fieldnames:
+                            timestamp_col = col_name
+                            break
+                    
+                    # If no named column found, try to find a column with parseable timestamp data
+                    if timestamp_col is None:
+                        for col_name in reader.fieldnames:
+                            # Check if column contains parseable timestamp data
+                            f.seek(0)
+                            next(reader)  # Skip header
+                            sample_row = next(reader, None)
+                            if sample_row and col_name in sample_row:
+                                try:
+                                    self.parse_timestamp_value(sample_row[col_name])
+                                    timestamp_col = col_name
+                                    break
+                                except (ValueError, KeyError):
+                                    continue
+                        f.seek(0)
+                        next(reader)  # Skip header again
+                    
+                    if timestamp_col is None:
+                        raise ValueError("Could not find a parseable timestamp column in CSV")
+                    
+                    # Read all timestamps
+                    for row in reader:
+                        try:
+                            value_str = row[timestamp_col]
+                            timestamp_sec, is_frame = self.parse_timestamp_value(value_str)
+                            
+                            if is_frame:
+                                # It's a frame number
+                                frame_num = int(timestamp_sec)
+                                timestamp_sec = frame_num / self.fps
+                            else:
+                                # It's a timestamp in seconds
+                                frame_num = int(timestamp_sec * self.fps)
+                            
+                            # Clamp to valid range
+                            frame_num = max(0, min(frame_num, self.total_frames - 1))
+                            timestamps.append((frame_num, timestamp_sec))
+                        except (ValueError, KeyError) as e:
+                            continue  # Skip invalid rows
+                else:
+                    # No header - read timestamps
+                    if delimiter is None:
+                        # No delimiter found, read line by line (entire line is the value)
+                        for row_num, line in enumerate(f):
+                            if not line.strip():  # Skip empty rows
+                                continue
+                            try:
+                                value_str = line.strip()  # Entire line is the value
+                                if not value_str:  # Skip empty values
+                                    continue
+                                
+                                timestamp_sec, is_frame = self.parse_timestamp_value(value_str)
+                                
+                                if is_frame:
+                                    # It's a frame number
+                                    frame_num = int(timestamp_sec)
+                                    timestamp_sec = frame_num / self.fps
+                                else:
+                                    # It's a timestamp in seconds
+                                    frame_num = int(timestamp_sec * self.fps)
+                                
+                                # Clamp to valid range
+                                frame_num = max(0, min(frame_num, self.total_frames - 1))
+                                timestamps.append((frame_num, timestamp_sec))
+                            except (ValueError, IndexError) as e:
+                                continue  # Skip invalid rows
+                    else:
+                        # Use regular reader with detected delimiter
+                        reader = csv.reader(f, delimiter=delimiter)
+                        for row_num, row in enumerate(reader):
+                            if not row:  # Skip empty rows
+                                continue
+                            try:
+                                value_str = row[0].strip()  # First column
+                                if not value_str:  # Skip empty values
+                                    continue
+                                
+                                timestamp_sec, is_frame = self.parse_timestamp_value(value_str)
+                                
+                                if is_frame:
+                                    # It's a frame number
+                                    frame_num = int(timestamp_sec)
+                                    timestamp_sec = frame_num / self.fps
+                                else:
+                                    # It's a timestamp in seconds
+                                    frame_num = int(timestamp_sec * self.fps)
+                                
+                                # Clamp to valid range
+                                frame_num = max(0, min(frame_num, self.total_frames - 1))
+                                timestamps.append((frame_num, timestamp_sec))
+                            except (ValueError, IndexError) as e:
+                                continue  # Skip invalid rows
+                
+                # Sort by frame number
+                timestamps.sort(key=lambda x: x[0])
+                
+                print(f"Loaded {len(timestamps)} timestamps from {csv_path}")
+                if timestamps:
+                    hours_first = timestamps[0][1] / 3600
+                    hours_last = timestamps[-1][1] / 3600
+                    print(f"  First timestamp: frame {timestamps[0][0]} ({timestamps[0][1]:.2f}s = {hours_first:.2f} hours)")
+                    print(f"  Last timestamp: frame {timestamps[-1][0]} ({timestamps[-1][1]:.2f}s = {hours_last:.2f} hours)")
+                
+                return timestamps
+                
+        except Exception as e:
+            raise ValueError(f"Error loading CSV file {csv_path}: {e}")
+    
+    def jump_to_timestamp(self, index):
+        """
+        Jump to a specific timestamp by index.
+        
+        Args:
+            index: Index in timestamp_list (0-based)
+            
+        Returns:
+            True if successful, False if index out of range
+        """
+        if not self.timestamp_list or index < 0 or index >= len(self.timestamp_list):
+            return False
+        
+        frame_num, timestamp_sec = self.timestamp_list[index]
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        self.current_frame_number = frame_num
+        self.current_timestamp_index = index
+        return True
+    
+    def jump_to_next_timestamp(self):
+        """Jump to the next timestamp in the list."""
+        if not self.timestamp_list:
+            return False
+        
+        if self.current_timestamp_index < 0:
+            # Start at first timestamp
+            return self.jump_to_timestamp(0)
+        elif self.current_timestamp_index < len(self.timestamp_list) - 1:
+            return self.jump_to_timestamp(self.current_timestamp_index + 1)
+        else:
+            print("Already at last timestamp")
+            return False
+    
+    def jump_to_previous_timestamp(self):
+        """Jump to the previous timestamp in the list."""
+        if not self.timestamp_list:
+            return False
+        
+        if self.current_timestamp_index <= 0:
+            print("Already at first timestamp")
+            return False
+        else:
+            return self.jump_to_timestamp(self.current_timestamp_index - 1)
     
     def bbox_to_yolo(self, x, y, w, h, img_width, img_height):
         """Convert bounding box from pixel coordinates to YOLO format (normalized)."""
@@ -845,7 +1138,7 @@ class MovementDetector:
         # Motion must be detected in all recent frames
         return all(self.motion_history)
     
-    def process_video(self, display=True, save_output=None, use_edge_refinement=False, headless_scan=False):
+    def process_video(self, display=True, save_output=None, use_edge_refinement=False, headless_scan=False, timestamp_list=None):
         """
         Process video with dataset creation features.
         
@@ -854,6 +1147,7 @@ class MovementDetector:
             save_output: Path to save output video (optional)
             use_edge_refinement: Use edge detection to refine bounding boxes
             headless_scan: If True, scan in terminal with progress bar, only show GUI on detections
+            timestamp_list: Optional list of (frame, timestamp) tuples to navigate between
         """
         if not self.polygon_complete or self.mask is None:
             print("Error: No region selected. Please select a region first.")
@@ -888,6 +1182,17 @@ class MovementDetector:
         self.playback_speed = 1.0
         self.speed_index = 0
         
+        # Initialize timestamp navigation if provided
+        if timestamp_list:
+            self.timestamp_list = timestamp_list
+            self.current_timestamp_index = -1  # Will jump to first on start
+            print(f"\n=== Timestamp Navigation Mode ===")
+            print(f"Loaded {len(timestamp_list)} timestamps for navigation")
+            print("Press 'n' for next timestamp, 'p' for previous timestamp")
+        else:
+            self.timestamp_list = []
+            self.current_timestamp_index = -1
+        
         # Setup video writer if saving output
         out_writer = None
         if save_output:
@@ -913,6 +1218,9 @@ class MovementDetector:
         print("  'c': Clear selected boxes and manual boxes")
         print("  'f': Forward 10 frames")
         print("  'b': Backward 10 frames")
+        if self.timestamp_list:
+            print("  'n': Jump to next timestamp")
+            print("  'p': Jump to previous timestamp")
         print("  'r': Reset to beginning")
         print("  'e': Toggle edge refinement")
         print("  'q': Quit")
@@ -941,17 +1249,45 @@ class MovementDetector:
         window_name = "Dataset Creation - Movement Detection"
         gui_initialized = False
         
-        # Initialize progress bar for headless mode
+        # Initialize progress bar (works in both headless and normal mode)
         progress_bar = None
-        if headless_scan and TQDM_AVAILABLE:
+        if TQDM_AVAILABLE:
             # Adjust total for progress bar based on starting position
             start_frame = self.current_frame_number
             remaining_frames = self.total_frames - start_frame
             progress_bar = tqdm(total=remaining_frames, initial=0, desc="Scanning", unit="frame",
-                              bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+                              bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+                              file=sys.stdout, disable=False)
         
         # Terminal input handling for headless mode
         terminal_continue_pending = False
+        
+        # If timestamp list is provided, jump to first timestamp and pause
+        if self.timestamp_list:
+            if self.jump_to_next_timestamp():
+                frame_count = self.current_frame_number
+                ret, frame = self.cap.read()
+                if ret:
+                    paused = True
+                    paused_frame = frame.copy()
+                    # Re-detect motion for this frame
+                    motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
+                        frame, use_edge_refinement=use_edge_refinement
+                    )
+                    if bounding_boxes:
+                        bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
+                        if bounding_boxes and len(bounding_boxes) > 1:
+                            bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes)
+                        if bounding_boxes:
+                            bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
+                                                                          min_distance_ratio=self.min_distance_ratio, 
+                                                                          max_objects=self.max_objects)
+                    paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                    paused_display_motion = motion_detected
+                    self.selected_boxes.clear()
+                    self.manual_boxes.clear()
+                    print(f"Jumped to timestamp {self.current_timestamp_index + 1}/{len(self.timestamp_list)} "
+                          f"(frame {frame_count}, {self.timestamp_list[self.current_timestamp_index][1]:.2f}s)")
         
         while True:
             if not paused:
@@ -1066,10 +1402,11 @@ class MovementDetector:
                     callback_params['box_start'] = self.box_start
                     callback_params['current_box'] = self.current_box
             
-            # Update progress bar in headless mode
-            if headless_scan and progress_bar is not None and not paused:
+            # Update progress bar (works in both headless and normal mode)
+            if progress_bar is not None and not paused:
                 progress_bar.update(1)
                 progress_bar.set_postfix({'detections': len(self.movement_timestamps), 'saved': self.saved_count})
+                progress_bar.refresh()  # Force refresh to ensure visibility
             
             # Skip rendering during headless scanning (only render when paused)
             # Also skip rendering if this frame shouldn't be displayed due to playback speed
@@ -1193,6 +1530,12 @@ class MovementDetector:
                         remaining_frames = int(remaining / self.playback_speed) if self.playback_speed > 0 else 0
                         cv2.putText(display_frame, f"Cooldown: {remaining_frames} frames", 
                                    (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                # Show timestamp navigation info if in timestamp mode
+                if self.timestamp_list and self.current_timestamp_index >= 0:
+                    timestamp_info = f"Timestamp: {self.current_timestamp_index + 1}/{len(self.timestamp_list)} " \
+                                   f"({self.timestamp_list[self.current_timestamp_index][1]:.2f}s)"
+                    cv2.putText(display_frame, timestamp_info, 
+                               (10, self.height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 
                 if save_output:
                     cv2.putText(display_frame, "Recording...", (10, self.height - 15), 
@@ -1208,6 +1551,18 @@ class MovementDetector:
                         cv2.resizeWindow(window_name, scaled_width, scaled_height)
                         cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
                         gui_initialized = True
+                    # Ensure window is visible when paused (especially in headless mode)
+                    if paused:
+                        try:
+                            # Try to bring window to front (Windows-specific, but harmless on other platforms)
+                            if sys.platform == 'win32':
+                                import ctypes
+                                hwnd = ctypes.windll.user32.FindWindowW(None, window_name)
+                                if hwnd:
+                                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                                    ctypes.windll.user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
+                        except:
+                            pass  # Ignore errors, just try to help
                     
                     # Update callback params to ensure current_class is always up to date
                     callback_params['current_class'] = self.current_class
@@ -1217,7 +1572,9 @@ class MovementDetector:
                                              interpolation=cv2.INTER_LINEAR)
                     cv2.imshow(window_name, scaled_frame)
                     
-                    key = cv2.waitKey(1) & 0xFF
+                    # Use longer wait time when paused to ensure window stays responsive
+                    wait_time = 30 if paused else 1
+                    key = cv2.waitKey(wait_time) & 0xFF
                     if key == ord('q'):
                         break
                     elif key == ord(' '):
@@ -1228,6 +1585,14 @@ class MovementDetector:
                             paused_display_motion = display_motion
                             self.selected_boxes.clear()
                             self.manual_boxes.clear()
+                            # Ensure window is visible when manually paused
+                            if not gui_initialized:
+                                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                                scaled_width = int(self.width * self.display_scale)
+                                scaled_height = int(self.height * self.display_scale)
+                                cv2.resizeWindow(window_name, scaled_width, scaled_height)
+                                cv2.setMouseCallback(window_name, self.annotation_callback, callback_params)
+                                gui_initialized = True
                             print("Paused - Ready for annotation")
                         else:
                             paused_frame = None
@@ -1274,6 +1639,7 @@ class MovementDetector:
                         new_frame = min(frame_count + 10, self.total_frames - 1)
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
                         frame_count = new_frame
+                        self.current_frame_number = frame_count
                         ret, frame = self.cap.read()
                         if ret:
                             paused_frame = frame.copy()
@@ -1299,6 +1665,7 @@ class MovementDetector:
                         new_frame = max(frame_count - 10, 0)
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
                         frame_count = new_frame
+                        self.current_frame_number = frame_count
                         ret, frame = self.cap.read()
                         if ret:
                             paused_frame = frame.copy()
@@ -1352,6 +1719,62 @@ class MovementDetector:
                     elif key == ord('e'):
                         use_edge_refinement = not use_edge_refinement
                         print(f"Edge refinement: {'ENABLED' if use_edge_refinement else 'DISABLED'}")
+                    elif key == ord('n') and self.timestamp_list:
+                        # Jump to next timestamp
+                        if self.jump_to_next_timestamp():
+                            frame_count = self.current_frame_number
+                            ret, frame = self.cap.read()
+                            if ret:
+                                paused = True
+                                paused_frame = frame.copy()
+                                current_frame = frame.copy()  # Update current_frame for display
+                                # Re-detect motion for this frame
+                                motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
+                                    frame, use_edge_refinement=use_edge_refinement
+                                )
+                                if bounding_boxes:
+                                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
+                                    if bounding_boxes and len(bounding_boxes) > 1:
+                                        bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes)
+                                    if bounding_boxes:
+                                        bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
+                                                                                      min_distance_ratio=self.min_distance_ratio, 
+                                                                                      max_objects=self.max_objects)
+                                paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                                paused_display_motion = motion_detected
+                                display_motion = motion_detected
+                                self.selected_boxes.clear()
+                                self.manual_boxes.clear()
+                                print(f"Jumped to timestamp {self.current_timestamp_index + 1}/{len(self.timestamp_list)} "
+                                      f"(frame {frame_count}, {self.timestamp_list[self.current_timestamp_index][1]:.2f}s)")
+                    elif key == ord('p') and self.timestamp_list:
+                        # Jump to previous timestamp
+                        if self.jump_to_previous_timestamp():
+                            frame_count = self.current_frame_number
+                            ret, frame = self.cap.read()
+                            if ret:
+                                paused = True
+                                paused_frame = frame.copy()
+                                current_frame = frame.copy()  # Update current_frame for display
+                                # Re-detect motion for this frame
+                                motion_detected, motion_area, bounding_boxes = self.detect_motion_in_region(
+                                    frame, use_edge_refinement=use_edge_refinement
+                                )
+                                if bounding_boxes:
+                                    bounding_boxes = self.filter_objects_by_tracking(bounding_boxes, frame_count)
+                                    if bounding_boxes and len(bounding_boxes) > 1:
+                                        bounding_boxes = self.filter_adjacent_artifacts(bounding_boxes)
+                                    if bounding_boxes:
+                                        bounding_boxes = self.filter_spatial_clusters(bounding_boxes, 
+                                                                                      min_distance_ratio=self.min_distance_ratio, 
+                                                                                      max_objects=self.max_objects)
+                                paused_bounding_boxes = bounding_boxes.copy() if bounding_boxes else []
+                                paused_display_motion = motion_detected
+                                display_motion = motion_detected
+                                self.selected_boxes.clear()
+                                self.manual_boxes.clear()
+                                print(f"Jumped to timestamp {self.current_timestamp_index + 1}/{len(self.timestamp_list)} "
+                                      f"(frame {frame_count}, {self.timestamp_list[self.current_timestamp_index][1]:.2f}s)")
             
             # Handle terminal input in headless mode when paused
             # When paused in headless mode, wait for user to press Enter in terminal
@@ -1485,6 +1908,8 @@ def main():
                        help='Scan in terminal with progress bar, only show GUI on detections (saves IO/compute)')
     parser.add_argument('--start-percent', type=float, default=0.0,
                        help='Start video at this percentage (0-100, default: 0)')
+    parser.add_argument('--timestamps-csv', type=str, default=None,
+                       help='Path to CSV file with timestamps to navigate. CSV should have a column with timestamps (seconds) or frame numbers.')
     
     args = parser.parse_args()
     
@@ -1512,6 +1937,17 @@ def main():
     if args.start_percent > 0:
         detector.start_percent = args.start_percent
     
+    # Load timestamps from CSV if provided
+    timestamp_list = None
+    if args.timestamps_csv:
+        try:
+            timestamp_list = detector.load_timestamps_from_csv(args.timestamps_csv)
+            if not timestamp_list:
+                print(f"Warning: No valid timestamps found in {args.timestamps_csv}")
+        except Exception as e:
+            print(f"Error loading timestamps CSV: {e}")
+            return
+    
     # Select region
     if not detector.select_region():
         print("Region selection cancelled.")
@@ -1522,7 +1958,8 @@ def main():
         display=not args.no_display,
         save_output=args.save_video,
         use_edge_refinement=not args.no_edge_refinement,
-        headless_scan=args.headless_scan
+        headless_scan=args.headless_scan,
+        timestamp_list=timestamp_list
     )
     
     # Print results
