@@ -44,7 +44,7 @@ import argparse
 import random
 import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -120,31 +120,48 @@ def update_data_yaml(dataset_dir: Path):
     print(f"  Classes: {names} (nc={nc})")
 
 
-def collect_all_images(dataset_dir: Path) -> Tuple[List[Path], Path]:
+def collect_all_images(dataset_dir: Path) -> Tuple[List[Path], Dict[Path, Optional[Path]]]:
     """
     Collect all images from train/valid/test splits and return them along with
-    a temporary staging directory path. This allows re-splitting existing splits.
+    a mapping of image paths to their corresponding label paths.
+    This allows re-splitting existing splits.
+    
+    Returns:
+        Tuple of (list of image paths, dict mapping image_path -> label_path)
     """
     all_images = []
-    all_labels_dir = dataset_dir / "train" / "labels"  # Default labels location
+    image_to_label = {}
     
-    # Check all splits for images
+    # Check all splits for images and their corresponding labels
     for split in ["train", "valid", "test"]:
         split_images_dir = dataset_dir / split / "images"
         split_labels_dir = dataset_dir / split / "labels"
         
         if split_images_dir.exists():
             images = list_images(split_images_dir)
-            all_images.extend(images)
+            print(f"Found {len(images)} images in {split}/images")
             
-            # Track labels directory (prefer train, but use any that exists)
-            if split_labels_dir.exists() and split == "train":
-                all_labels_dir = split_labels_dir
+            for img_path in images:
+                all_images.append(img_path)
+                
+                # Look for corresponding label in the same split first
+                label_name = img_path.with_suffix(".txt").name
+                label_path = split_labels_dir / label_name
+                
+                if label_path.exists():
+                    image_to_label[img_path] = label_path
+                else:
+                    # Label not found in same split, will search in move_pair
+                    image_to_label[img_path] = None
     
-    if not all_labels_dir.exists():
-        raise FileNotFoundError(f"Labels directory does not exist: {all_labels_dir}")
+    if not all_images:
+        raise RuntimeError(f"No images found in any split of {dataset_dir}")
     
-    return all_images, all_labels_dir
+    # Count how many images have labels
+    images_with_labels = sum(1 for label_path in image_to_label.values() if label_path is not None)
+    print(f"Collected {len(all_images)} total images ({images_with_labels} with labels found)")
+    
+    return all_images, image_to_label
 
 
 def split_dataset(
@@ -188,7 +205,7 @@ def split_dataset(
         )
 
     # Collect all images from all splits (for re-splitting or initial split)
-    all_images, labels_dir = collect_all_images(dataset_dir)
+    all_images, image_to_label = collect_all_images(dataset_dir)
     n = len(all_images)
     
     if n == 0:
@@ -196,8 +213,6 @@ def split_dataset(
 
     if needs_resplit:
         print(f"Re-splitting dataset: found {n} images across all splits")
-        # Move all images to a temporary location first to avoid conflicts
-        # We'll move them directly to their final destinations
     else:
         print(f"Splitting {n} images from train split")
 
@@ -223,43 +238,18 @@ def split_dataset(
 
         label_name = img_path.with_suffix(".txt").name
         
-        # Determine which split the image currently belongs to
-        current_split = None
-        try:
-            # Check if image is in any split's images directory
-            for split in ["train", "valid", "test"]:
-                split_images_dir = dataset_dir / split / "images"
-                try:
-                    if img_path.resolve().is_relative_to(split_images_dir.resolve()):
-                        current_split = split
-                        break
-                except (AttributeError, ValueError):
-                    # Fallback for older Python versions or path issues
-                    if str(img_path.resolve()).startswith(str(split_images_dir.resolve())):
-                        current_split = split
-                        break
-        except Exception:
-            # If path resolution fails, we'll search all splits for labels
-            pass
+        # Get the label path from our mapping (collected earlier)
+        src_label = image_to_label.get(img_path)
         
-        # Try to find label: first check same split as image, then search all splits
-        src_label = None
-        if current_split:
-            potential_label = dataset_dir / current_split / "labels" / label_name
-            if potential_label.exists():
-                src_label = potential_label
-        
-        # If not found, search all splits
-        if src_label is None:
+        # If not found in mapping, search all splits for the label
+        if src_label is None or not src_label.exists():
             for split in ["train", "valid", "test"]:
                 potential_label = dataset_dir / split / "labels" / label_name
                 if potential_label.exists():
                     src_label = potential_label
                     break
-        
-        # Fallback to the labels_dir we found earlier
-        if src_label is None:
-            src_label = labels_dir / label_name
+            else:
+                src_label = None
 
         # Move image if it's not already in the correct place
         dst_img = target_images_dir / img_path.name
@@ -267,11 +257,11 @@ def split_dataset(
             shutil.move(str(img_path), str(dst_img))
 
         # Move label if it exists and needs to be moved
-        if src_label.exists():
+        if src_label is not None and src_label.exists():
             dst_label = target_labels_dir / src_label.name
             if src_label.resolve() != dst_label.resolve():
                 shutil.move(str(src_label), str(dst_label))
-        else:
+        elif src_label is None:
             print(f"Warning: Label file not found for image {img_path.name}")
 
     # Move all images to their target splits
