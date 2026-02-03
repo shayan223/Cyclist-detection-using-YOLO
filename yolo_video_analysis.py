@@ -52,8 +52,9 @@ def load_model(model_path, device, model_type='auto'):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.5, iou_threshold=0.1):
-    """Process video file and overlay cyclist bounding boxes with live display."""
+def process_video(input_video_path, output_video_path, model, confidence_threshold=0.5, iou_threshold=0.1,
+                  disable_display=False):
+    """Process video file and overlay cyclist bounding boxes with optional live display."""
     
     # Open input video
     cap = cv2.VideoCapture(input_video_path)
@@ -74,12 +75,13 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
     print(f"  FPS: {fps}")
     print(f"  Total frames: {total_frames}")
     print(f"  Frame delay: {frame_delay}ms")
-    print(f"\nControls:")
-    print(f"  Press 'q' to quit")
-    print(f"  Press 's' to save current frame")
-    print(f"  Press 'p' to pause/resume")
-    print(f"  Press '+' to increase speed")
-    print(f"  Press '-' to decrease speed")
+    if not disable_display:
+        print(f"\nControls:")
+        print(f"  Press 'q' to quit")
+        print(f"  Press 's' to save current frame")
+        print(f"  Press 'p' to pause/resume")
+        print(f"  Press '+' to increase speed")
+        print(f"  Press '-' to decrease speed")
     
     # Setup video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -225,32 +227,33 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     progress = (frame_count / total_frames) * 100
                     print(f"Processing frame {frame_count}/{total_frames} ({progress:.1f}%)")
             
-            # Display the frame
-            cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
-            
-            # Calculate actual delay based on speed multiplier
-            actual_delay = max(1, int(frame_delay / speed_multiplier))
-            
-            # Handle keyboard input
-            key = cv2.waitKey(actual_delay) & 0xFF
-            if key == ord('q'):
-                print("\nQuit requested by user")
-                break
-            elif key == ord('s'):
-                # Save current frame
-                frame_filename = f"frame_{frame_count:06d}.jpg"
-                cv2.imwrite(frame_filename, annotated_frame)
-                print(f"Frame saved as: {frame_filename}")
-            elif key == ord('p'):
-                paused = not paused
-                status = "Paused" if paused else "Resumed"
-                print(f"Video {status}")
-            elif key == ord('+') or key == ord('='):
-                speed_multiplier = min(5.0, speed_multiplier + 0.5)
-                print(f"Speed increased to {speed_multiplier:.1f}x")
-            elif key == ord('-'):
-                speed_multiplier = max(0.1, speed_multiplier - 0.5)
-                print(f"Speed decreased to {speed_multiplier:.1f}x")
+            if not disable_display:
+                # Display the frame
+                cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
+                
+                # Calculate actual delay based on speed multiplier
+                actual_delay = max(1, int(frame_delay / speed_multiplier))
+                
+                # Handle keyboard input
+                key = cv2.waitKey(actual_delay) & 0xFF
+                if key == ord('q'):
+                    print("\nQuit requested by user")
+                    break
+                elif key == ord('s'):
+                    # Save current frame
+                    frame_filename = f"frame_{frame_count:06d}.jpg"
+                    cv2.imwrite(frame_filename, annotated_frame)
+                    print(f"Frame saved as: {frame_filename}")
+                elif key == ord('p'):
+                    paused = not paused
+                    status = "Paused" if paused else "Resumed"
+                    print(f"Video {status}")
+                elif key == ord('+') or key == ord('='):
+                    speed_multiplier = min(5.0, speed_multiplier + 0.5)
+                    print(f"Speed increased to {speed_multiplier:.1f}x")
+                elif key == ord('-'):
+                    speed_multiplier = max(0.1, speed_multiplier - 0.5)
+                    print(f"Speed decreased to {speed_multiplier:.1f}x")
     
     except KeyboardInterrupt:
         print("\nProcessing interrupted by user")
@@ -259,7 +262,11 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
         # Clean up
         cap.release()
         out.release()
-        cv2.destroyAllWindows()
+        if not disable_display:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
         print(f"Video processing completed. Output saved to: {output_video_path}")
 
 def main():
@@ -273,6 +280,8 @@ def main():
                         help="Model architecture: 'yolo' for YOLOv8, 'rtdetr' for RT-DETR, or 'auto' to infer from path")
     parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
+    parser.add_argument('--no-display', action='store_true',
+                        help='Disable live OpenCV window (useful in headless/GUI-less environments)')
     
     args = parser.parse_args()
     
@@ -303,7 +312,7 @@ def main():
     print(f"Confidence threshold: {args.confidence}")
     print(f"NMS IoU threshold: {args.iou}")
     
-    process_video(args.input, args.output, model, args.confidence, args.iou)
+    process_video(args.input, args.output, model, args.confidence, args.iou, disable_display=args.no_display)
 
 if __name__ == "__main__":
     main()
