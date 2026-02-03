@@ -380,7 +380,7 @@ def main():
     # Set output path if not provided
     if args.output is None:
         base_name = os.path.splitext(args.input)[0]
-        args.output = f"{base_name}_tracked.mp4"
+        args.output = f"{base_name}_DEEPSort_tracked.mp4"
     
     # Validate model file
     if not os.path.exists(args.model):

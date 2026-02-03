@@ -4,12 +4,14 @@ import torch
 
 # --- Configuration ---
 # To triple training samples: run augment_dataset_3x.py, then use the 3x data.yaml below.
-CONFIG_FILE_PATH = 'pdx_cyclist_dataset/data.yaml'  # or 'pdx_cyclist_dataset_3x/data.yaml' for 3x augmented train set
+CONFIG_FILE_PATH = 'pdx_cyclist_dataset_3x/data.yaml'  # or 'pdx_cyclist_dataset_3x/data.yaml' for 3x augmented train set
 # CONFIG_FILE_PATH = 'pdx_cyclist_dataset_3x/data.yaml'  # uncomment after running: python augment_dataset_3x.py --dataset-dir pdx_cyclist_dataset --output-dir pdx_cyclist_dataset_3x
 #MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model (options: rtdetr-l.pt, rtdetr-x.pt) USE THIS FOR FIRST TIME TRAINING
 MODEL_PATH = './cyclist_detection_rtdetr/rtdetr_finetune4/weights/best.pt' # pre-finetuned model on cyclist dataset, for further fine tuning on pdx dataset  
 EPOCHS = 10
 BATCH = 8
+# Initial learning rate (lr0). Use a smaller value (e.g. 1e-4, 5e-5) for gentler fine-tuning.
+LR0 = 0.0001  # Ultralytics default; try 0.001 or 0.0001 for smaller updates
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- Runtime Augmentation ---
@@ -44,6 +46,7 @@ ERASING = 0.4       # Random erasing probability (0.0-1.0)
 
 
 def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
+                     lr0=LR0,
                      augment=None,
                      hsv_h=HSV_H, hsv_s=HSV_S, hsv_v=HSV_V,
                      degrees=DEGREES, translate=TRANSLATE, scale=SCALE,
@@ -69,6 +72,7 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
     model.to(device)
 
     print(f"Training on device: {device}")
+    print(f"Initial learning rate (lr0): {lr0}")
     print(f"Runtime augmentation: {'enabled' if augment else 'disabled'}")
     if augment:
         print(f"  - HSV: H={hsv_h}, S={hsv_s}, V={hsv_v}")
@@ -82,6 +86,7 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
         epochs=epochs,
         batch=batch,
         device=device,
+        lr0=lr0,
         patience=5,  # Stop training early if no improvement
         save_period=5,  # Save model after each epoch
         project="pdx_rtdetr",
@@ -113,6 +118,7 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
 if __name__ == "__main__":
     fine_tune_rtdetr(
         CONFIG_FILE_PATH, MODEL_PATH, EPOCHS, BATCH, DEVICE,
+        lr0=LR0,
         augment=ENABLE_AUGMENTATION,
     )
 
