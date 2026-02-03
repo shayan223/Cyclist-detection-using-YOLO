@@ -114,25 +114,33 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
     cyclist_ids_seen = set()
     pedestrian_ids_seen = set()
     
-    # Setup video writer - try H264 codec for better performance (if available)
-    # Fallback to mp4v if H264 not available
-    try:
-        fourcc = cv2.VideoWriter_fourcc(*'H264')
-        # Test if codec works by creating a temporary writer
-        test_writer = cv2.VideoWriter('test.avi', fourcc, fps, (width, height))
-        if test_writer.isOpened():
-            test_writer.release()
-            os.remove('test.avi') if os.path.exists('test.avi') else None
-        else:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    except:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    # Setup video writer - try codecs in order (H264 often fails on Windows without OpenH264)
+    ext = os.path.splitext(output_video_path)[1].lower()
+    codecs_to_try = [
+        ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),  # mp4v works on most systems
+        ('H264', cv2.VideoWriter_fourcc(*'H264')),
+        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
+        ('avc1', cv2.VideoWriter_fourcc(*'avc1')),
+    ]
+    out = None
+    for codec_name, fourcc in codecs_to_try:
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        if out.isOpened():
+            print(f"VideoWriter using codec: {codec_name}")
+            break
+        out.release()
+        out = None
+    if out is None:
+        raise RuntimeError(
+            "Could not create VideoWriter. Try installing OpenH264 or use a different output path. "
+            "See: https://github.com/cisco/openh264/releases"
+        )
     
     frame_count = 0
     paused = False
     speed_multiplier = 1.0  # Speed control (1.0 = normal speed)
     annotated_frame = None  # Initialize to avoid undefined variable
+    display_available = not disable_display  # May be set False if imshow fails (no GUI in OpenCV)
     
     # Calculate fixed text overlay dimensions ONCE to prevent shifting
     font_scale = 0.8
@@ -291,14 +299,18 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     print(f"Processing frame {frame_count}/{total_frames} ({progress:.1f}%)")
             
             # Display the frame (only if we have a frame to display and display is enabled)
-            if not disable_display and annotated_frame is not None:
-                cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
+            if display_available and annotated_frame is not None:
+                try:
+                    cv2.imshow('Cyclist & Pedestrian Detection - Live View', annotated_frame)
+                except (cv2.error, Exception):
+                    display_available = False
+                    print("Display not available (OpenCV built without GUI). Use --no-display to avoid this. Continuing without live view.")
             
             # Calculate actual delay based on speed multiplier
-            actual_delay = max(1, int(frame_delay / speed_multiplier)) if not disable_display else 1
+            actual_delay = max(1, int(frame_delay / speed_multiplier)) if display_available else 1
             
             # Handle keyboard input (only if display is enabled)
-            key = cv2.waitKey(actual_delay) & 0xFF if not disable_display else 0
+            key = cv2.waitKey(actual_delay) & 0xFF if display_available else 0
             if key == ord('q'):
                 print("\nQuit requested by user")
                 break
@@ -325,7 +337,11 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
         # Clean up
         cap.release()
         out.release()
-        cv2.destroyAllWindows()
+        if display_available:
+            try:
+                cv2.destroyAllWindows()
+            except (cv2.error, Exception):
+                pass
         print(f"\nVideo processing completed!")
         print(f"Output saved to: {output_video_path}")
         print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
