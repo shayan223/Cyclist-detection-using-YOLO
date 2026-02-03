@@ -3,14 +3,19 @@ from ultralytics import RTDETR
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = 'pdx_cyclist_dataset/data.yaml'#'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
+# To triple training samples: run augment_dataset_3x.py, then use the 3x data.yaml below.
+CONFIG_FILE_PATH = 'pdx_cyclist_dataset/data.yaml'  # or 'pdx_cyclist_dataset_3x/data.yaml' for 3x augmented train set
+# CONFIG_FILE_PATH = 'pdx_cyclist_dataset_3x/data.yaml'  # uncomment after running: python augment_dataset_3x.py --dataset-dir pdx_cyclist_dataset --output-dir pdx_cyclist_dataset_3x
 #MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model (options: rtdetr-l.pt, rtdetr-x.pt) USE THIS FOR FIRST TIME TRAINING
 MODEL_PATH = './cyclist_detection_rtdetr/rtdetr_finetune4/weights/best.pt' # pre-finetuned model on cyclist dataset, for further fine tuning on pdx dataset  
 EPOCHS = 10
 BATCH = 8
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# --- Data Augmentation Configuration ---
+# --- Runtime Augmentation ---
+ENABLE_AUGMENTATION = False  # Set to False to disable all data augmentation during training
+
+# --- Data Augmentation Configuration (used only when ENABLE_AUGMENTATION is True) ---
 # HSV augmentation (color space)
 HSV_H = 0.015  # Hue augmentation factor
 HSV_S = 0.7    # Saturation augmentation factor
@@ -39,13 +44,24 @@ ERASING = 0.4       # Random erasing probability (0.0-1.0)
 
 
 def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
+                     augment=None,
                      hsv_h=HSV_H, hsv_s=HSV_S, hsv_v=HSV_V,
                      degrees=DEGREES, translate=TRANSLATE, scale=SCALE,
                      shear=SHEAR, perspective=PERSPECTIVE,
                      flipud=FLIPUD, fliplr=FLIPLR,
                      mosaic=MOSAIC, mixup=MIXUP, cutmix=CUTMIX, copy_paste=COPY_PASTE,
                      auto_augment=AUTO_AUGMENT, erasing=ERASING):
-    """Fine-tunes an RT-DETR model on the cyclist dataset with data augmentation."""
+    """Fine-tunes an RT-DETR model on the cyclist dataset with optional data augmentation."""
+    if augment is None:
+        augment = ENABLE_AUGMENTATION
+
+    if not augment:
+        hsv_h = hsv_s = hsv_v = 0.0
+        degrees = translate = scale = shear = perspective = 0.0
+        flipud = fliplr = 0.0
+        mosaic = mixup = cutmix = copy_paste = 0.0
+        auto_augment = None
+        erasing = 0.0
 
     os.environ['WANDB_DISABLED'] = 'true'  # Disable Weights & Biases logging
 
@@ -53,12 +69,13 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
     model.to(device)
 
     print(f"Training on device: {device}")
-    print(f"Data augmentation enabled:")
-    print(f"  - HSV: H={hsv_h}, S={hsv_s}, V={hsv_v}")
-    print(f"  - Geometric: degrees={degrees}, translate={translate}, scale={scale}")
-    print(f"  - Flips: horizontal={fliplr}, vertical={flipud}")
-    print(f"  - Advanced: mosaic={mosaic}, mixup={mixup}, cutmix={cutmix}, copy_paste={copy_paste}")
-    print(f"  - Auto augment: {auto_augment}, erasing={erasing}")
+    print(f"Runtime augmentation: {'enabled' if augment else 'disabled'}")
+    if augment:
+        print(f"  - HSV: H={hsv_h}, S={hsv_s}, V={hsv_v}")
+        print(f"  - Geometric: degrees={degrees}, translate={translate}, scale={scale}")
+        print(f"  - Flips: horizontal={fliplr}, vertical={flipud}")
+        print(f"  - Advanced: mosaic={mosaic}, mixup={mixup}, cutmix={cutmix}, copy_paste={copy_paste}")
+        print(f"  - Auto augment: {auto_augment}, erasing={erasing}")
 
     results = model.train(
         data=config_file_path,
@@ -94,5 +111,8 @@ def fine_tune_rtdetr(config_file_path, model_path, epochs, batch, device,
 
 
 if __name__ == "__main__":
-    fine_tune_rtdetr(CONFIG_FILE_PATH, MODEL_PATH, EPOCHS, BATCH, DEVICE)
+    fine_tune_rtdetr(
+        CONFIG_FILE_PATH, MODEL_PATH, EPOCHS, BATCH, DEVICE,
+        augment=ENABLE_AUGMENTATION,
+    )
 

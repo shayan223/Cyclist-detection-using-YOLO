@@ -5,6 +5,9 @@ torch>=2.0.0
 torchvision>=0.15.0
 ultralytics>=8.0.0
 rfdetr>=1.0.0
+# RF-DETR imports find_pruneable_heads_and_indices from transformers.pytorch_utils;
+# that was removed in newer transformers. Pin to a compatible version.
+transformers>=4.0.0,<4.46.0
 
 # Data processing and visualization
 matplotlib>=3.7.0

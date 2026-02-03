@@ -17,6 +17,10 @@ ECP*/
 cyclist_detection_yolo11n/
 eurocity_yolo/
 /BACKUP_pdx_cyclist_dataset/
+/pdx_cyclist_dataset_3x/
+/pdx_cyclist_dataset_coco/
 
+
+*.pth
 *.pt
 *.onnx
