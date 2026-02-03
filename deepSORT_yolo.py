@@ -1,13 +1,13 @@
 import cv2
 import argparse
 import os
-from ultralytics import YOLO
+from ultralytics import YOLO, RTDETR
 import torch
 import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
-EXPERIMENT_NAME = 'pdx_rtdetr_finetune2'#'rtdetr_finetune4'#'yolo_finetune'
+EXPERIMENT_NAME = 'pdx_rtdetr_finetune3'#'rtdetr_finetune4'#'yolo_finetune'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 #MODEL_PATH = './cyclist_detection_yolo8/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
 BATCH = 8
@@ -30,16 +30,28 @@ CLASS_NAMES = [
 ]
 '''
 
-def load_model(model_path, device):
-    """Load the YOLO model."""
-    print(f"Loading YOLO model from: {model_path}")
-    model = YOLO(model_path)
+def _is_rtdetr_path(model_path):
+    """Return True if path suggests an RT-DETR model (e.g. pdx_rtdetr, rtdetr_finetune)."""
+    path_lower = model_path.replace('\\', '/').lower()
+    return 'rtdetr' in path_lower
+
+
+def load_model(model_path, device, use_rtdetr=None):
+    """Load YOLO or RT-DETR model. If use_rtdetr is None, auto-detect from path."""
+    if use_rtdetr is None:
+        use_rtdetr = _is_rtdetr_path(model_path)
+    if use_rtdetr:
+        print(f"Loading RT-DETR model from: {model_path}")
+        model = RTDETR(model_path)
+    else:
+        print(f"Loading YOLO model from: {model_path}")
+        model = YOLO(model_path)
     model.to(device)
     print(f"Model loaded successfully on device: {device}")
     return model
 
 def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7, iou_threshold=0.1, disable_display=False):
-    """Process video file and overlay cyclist and pedestrian bounding boxes with tracking using DeepSORT."""
+    """Process video: detect cyclists/pedestrians (YOLO or RT-DETR), track with DeepSORT, overlay boxes."""
     
     # Open input video
     cap = cv2.VideoCapture(input_video_path)
@@ -158,7 +170,7 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 if not ret:
                     break
                 
-                # Run YOLO detection
+                # Run detection (same API for YOLO and RT-DETR)
                 # Lower iou threshold (default 0.45) to prevent NMS from suppressing overlapping detections
                 # between different classes (cyclists and pedestrians)
                 results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=False)
@@ -320,17 +332,29 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
         print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Analyze video for cyclist and pedestrian tracking using YOLO + DeepSORT')
+    parser = argparse.ArgumentParser(description='Analyze video for cyclist and pedestrian tracking using YOLO or RT-DETR + DeepSORT')
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_tracked.mp4)')
-    parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
+    parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
+    parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--max-age', type=int, default=5, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
     parser.add_argument('--no-display', action='store_true', help='Disable live display (faster processing)')
     
     args = parser.parse_args()
+    
+    # Resolve model type: explicit flag overrides auto-detect
+    use_rtdetr = None
+    if args.rtdetr:
+        use_rtdetr = True
+    if args.yolo:
+        use_rtdetr = False
+    if args.yolo and args.rtdetr:
+        print("Warning: both --yolo and --rtdetr given; using --rtdetr")
+        use_rtdetr = True
     
     # Validate input file
     if not os.path.exists(args.input):
@@ -347,8 +371,8 @@ def main():
         print(f"Error: Model file '{args.model}' not found")
         return
     
-    # Load model
-    model = load_model(args.model, DEVICE)
+    # Load model (YOLO or RT-DETR; auto-detect from path if not specified)
+    model = load_model(args.model, DEVICE, use_rtdetr=use_rtdetr)
     
     # Process video
     print(f"Starting video analysis with DeepSORT tracking...")
