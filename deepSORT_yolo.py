@@ -354,7 +354,7 @@ def main():
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
     parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
     parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
-    parser.add_argument('--confidence', '-c', type=float, default=0.5, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--max-age', type=int, default=5, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')

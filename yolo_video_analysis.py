@@ -1,15 +1,15 @@
 import cv2
 import argparse
 import os
-from ultralytics import YOLO
+from ultralytics import YOLO, RTDETR
 import torch
 import numpy as np
 
 # --- Configuration ---
-EXPERIMENT_NAME =  'pdx_rtdetr_finetune2'#'rtdetr_finetune4'#'rtdetr_finetune4'#'yolo_finetune2'
+EXPERIMENT_NAME =  'pdx_rtdetr_finetune3'#'rtdetr_finetune4'#'rtdetr_finetune4'#'yolo_finetune2'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
 BATCH = 8
-DEFAULT_MODEL_PATH = './pdx_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base YOLO model
+DEFAULT_MODEL_PATH = './pdx_rtdetr/'+EXPERIMENT_NAME+'/weights/best.pt' #'yolov8l.pt'  # Base model (YOLOv8 or RT-DETR)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 '''
@@ -28,10 +28,26 @@ CLASS_NAMES = [
 ]
 '''
 
-def load_model(model_path, device):
-    """Load the YOLO model."""
-    print(f"Loading YOLO model from: {model_path}")
-    model = YOLO(model_path)
+def load_model(model_path, device, model_type='auto'):
+    """Load a YOLOv8 or RT-DETR model."""
+    model_type = (model_type or 'auto').lower()
+
+    # Auto-detect architecture from path if requested
+    inferred_type = model_type
+    if model_type == 'auto':
+        path_lower = str(model_path).lower()
+        if 'rtdetr' in os.path.basename(path_lower) or 'rtdetr' in path_lower:
+            inferred_type = 'rtdetr'
+        else:
+            inferred_type = 'yolo'
+
+    print(f"Loading {inferred_type.upper()} model from: {model_path}")
+
+    if inferred_type == 'rtdetr':
+        model = RTDETR(model_path)
+    else:
+        model = YOLO(model_path)
+
     model.to(device)
     print(f"Model loaded successfully on device: {device}")
     return model
@@ -84,7 +100,7 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 # This also outputs logging to the console, giving image size and detected objects.
                 # Lower iou threshold (default 0.45) to prevent NMS from suppressing overlapping detections
                 # between different classes (cyclists and pedestrians)
-                results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=True)
+                results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=False)
                 #Uncomment this for logging info and bounding box coordinates
                 '''
                 # Extract detected objects
@@ -251,7 +267,11 @@ def main():
     parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_analyzed.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='YOLO model path')
-    parser.add_argument('--confidence', '-c', type=float, default=0.6, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--model-type', '-t',
+                        default='auto',
+                        choices=['yolo', 'rtdetr', 'auto'],
+                        help="Model architecture: 'yolo' for YOLOv8, 'rtdetr' for RT-DETR, or 'auto' to infer from path")
+    parser.add_argument('--confidence', '-c', type=float, default=0.4, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     
     args = parser.parse_args()
@@ -272,12 +292,14 @@ def main():
         return
     
     # Load model
-    model = load_model(args.model, DEVICE)
+    model = load_model(args.model, DEVICE, args.model_type)
     
     # Process video
     print(f"Starting video analysis...")
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
+    print(f"Model path: {args.model}")
+    print(f"Model type: {args.model_type}")
     print(f"Confidence threshold: {args.confidence}")
     print(f"NMS IoU threshold: {args.iou}")
     
