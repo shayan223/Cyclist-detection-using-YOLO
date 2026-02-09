@@ -6,6 +6,10 @@ import torch
 import numpy as np
 from typing import List, Tuple, Optional
 
+import matplotlib
+matplotlib.use('TkAgg')  # Interactive backend for ROI selection window
+import matplotlib.pyplot as plt
+
 # --- Configuration ---
 EXPERIMENT_NAME =  'pdx_rtdetr_finetune3'#'rtdetr_finetune4'#'rtdetr_finetune4'#'yolo_finetune2'
 CONFIG_FILE_PATH = './training_data/dataset.yaml'#'./training_data/config.yaml'
@@ -61,28 +65,20 @@ def is_bbox_in_roi(bbox: Tuple[int, int, int, int], mask: np.ndarray, min_overla
     
     return overlap_ratio >= min_overlap_ratio
 
-def select_roi_polygon(frame: np.ndarray) -> Optional[np.ndarray]:
-    """
-    Interactive function to let user select a polygon ROI by clicking points.
-    Returns a binary mask of the selected polygon, or None if cancelled.
-    """
+def _select_roi_opencv(frame: np.ndarray) -> Optional[np.ndarray]:
+    """Use OpenCV highgui for ROI selection. Fails if OpenCV has no GUI support."""
     points = []
     window_name = 'Select ROI Polygon - Click points, press ENTER to confirm, ESC to cancel'
     
     def mouse_callback(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             points.append((x, y))
-            # Draw the point
             cv2.circle(display_frame, (x, y), 5, (0, 255, 0), -1)
-            # Draw line connecting points if there are multiple
             if len(points) > 1:
                 cv2.line(display_frame, points[-2], points[-1], (0, 255, 0), 2)
             cv2.imshow(window_name, display_frame)
     
-    # Create a copy for display
     display_frame = frame.copy()
-    
-    # Add instructions
     cv2.putText(display_frame, "Click points to define polygon", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(display_frame, "Press ENTER to confirm, ESC to cancel", (10, 60),
@@ -92,38 +88,111 @@ def select_roi_polygon(frame: np.ndarray) -> Optional[np.ndarray]:
     cv2.setMouseCallback(window_name, mouse_callback)
     cv2.imshow(window_name, display_frame)
     
-    print("\nROI Selection Mode:")
-    print("  - Click points on the image to define polygon vertices")
-    print("  - Press ENTER to confirm the ROI")
-    print("  - Press ESC to cancel ROI selection")
-    
     while True:
         key = cv2.waitKey(1) & 0xFF
-        if key == 13:  # ENTER key
+        if key == 13:
             if len(points) < 3:
                 print("Error: Need at least 3 points to form a polygon. Please select more points.")
                 continue
             break
-        elif key == 27:  # ESC key
+        elif key == 27:
             print("ROI selection cancelled")
             cv2.destroyWindow(window_name)
             return None
     
     cv2.destroyWindow(window_name)
-    
     if len(points) < 3:
-        print("Error: Need at least 3 points to form a polygon")
         return None
-    
-    # Close the polygon by connecting last point to first
     points_array = np.array(points, dtype=np.int32)
-    
-    # Create mask
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     cv2.fillPoly(mask, [points_array], 255)
-    
     print(f"ROI polygon selected with {len(points)} points")
     return mask
+
+
+def _select_roi_matplotlib(frame: np.ndarray) -> Optional[np.ndarray]:
+    """Use matplotlib for ROI selection when OpenCV has no GUI (e.g. headless)."""
+    points = []
+    # BGR -> RGB for matplotlib
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h, w = frame.shape[:2]
+    
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    ax.imshow(frame_rgb)
+    ax.set_title("Select ROI: click points, then press Enter to confirm or Backspace to remove last point")
+    ax.axis('image')
+    line_artist, = ax.plot([], [], 'g-', linewidth=2)
+    scatter_artist = ax.scatter([], [], c='lime', s=50, zorder=5)
+    plt.tight_layout()
+    
+    def onclick(event):
+        if event.inaxes != ax or event.button != 1:
+            return
+        x, y = int(round(event.xdata)), int(round(event.ydata))
+        x = max(0, min(x, w - 1))
+        y = max(0, min(y, h - 1))
+        points.append((x, y))
+        _redraw()
+    
+    def onkey(event):
+        if event.key == 'enter' or event.key == 'return':
+            if len(points) >= 3:
+                plt.close(fig)
+            else:
+                print("Need at least 3 points. Click more or press Escape to cancel.")
+        elif event.key == 'escape':
+            plt.close(fig)
+        elif event.key == 'backspace' and points:
+            points.pop()
+            _redraw()
+    
+    def _redraw():
+        if not points:
+            line_artist.set_data([], [])
+            scatter_artist.set_offsets(np.empty((0, 2)))
+        else:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            line_artist.set_data(xs, ys)
+            scatter_artist.set_offsets(np.c_[xs, ys])
+        fig.canvas.draw_idle()
+    
+    fig.canvas.mpl_connect('button_press_event', onclick)
+    fig.canvas.mpl_connect('key_press_event', onkey)
+    
+    print("\nROI Selection Mode (matplotlib):")
+    print("  - Click points on the image to define polygon vertices")
+    print("  - Press ENTER to confirm, BACKSPACE to remove last point, ESC to cancel")
+    plt.show()
+    
+    if len(points) < 3:
+        print("ROI selection cancelled or too few points")
+        return None
+    
+    points_array = np.array(points, dtype=np.int32)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [points_array], 255)
+    print(f"ROI polygon selected with {len(points)} points")
+    return mask
+
+
+def select_roi_polygon(frame: np.ndarray) -> Optional[np.ndarray]:
+    """
+    Interactive function to let user select a polygon ROI by clicking points.
+    Returns a binary mask of the selected polygon, or None if cancelled.
+    Uses OpenCV if available; falls back to matplotlib when OpenCV has no GUI (e.g. headless).
+    """
+    print("\nROI Selection Mode:")
+    print("  - Click points on the image to define polygon vertices")
+    print("  - Press ENTER to confirm the ROI")
+    print("  - Press ESC to cancel ROI selection")
+    try:
+        return _select_roi_opencv(frame)
+    except cv2.error as e:
+        if "not implemented" in str(e).lower() or "cvNamedWindow" in str(e):
+            print("OpenCV GUI not available, using matplotlib for ROI selection.")
+            return _select_roi_matplotlib(frame)
+        raise
 
 def load_model(model_path, device, model_type='auto'):
     """Load a YOLOv8 or RT-DETR model."""
@@ -149,9 +218,25 @@ def load_model(model_path, device, model_type='auto'):
     print(f"Model loaded successfully on device: {device}")
     return model
 
+
+def _opencv_gui_available() -> bool:
+    """Return True if OpenCV was built with GUI support (highgui); False otherwise."""
+    try:
+        cv2.namedWindow('_gui_check_', cv2.WINDOW_NORMAL)
+        cv2.destroyWindow('_gui_check_')
+        return True
+    except cv2.error:
+        return False
+
+
 def process_video(input_video_path, output_video_path, model, confidence_threshold=0.5, iou_threshold=0.1,
                   disable_display=False, use_roi=False):
     """Process video file and overlay cyclist bounding boxes with optional live display."""
+    
+    # If live display requested but OpenCV has no GUI, disable display and inform user
+    if not disable_display and not _opencv_gui_available():
+        disable_display = True
+        print("OpenCV GUI not available (headless build). Running without live display. Output video will still be written.")
     
     # Open input video
     cap = cv2.VideoCapture(input_video_path)
@@ -421,7 +506,7 @@ def main():
                         default='auto',
                         choices=['yolo', 'rtdetr', 'auto'],
                         help="Model architecture: 'yolo' for YOLOv8, 'rtdetr' for RT-DETR, or 'auto' to infer from path")
-    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.8, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--no-display', action='store_true',
                         help='Disable live OpenCV window (useful in headless/GUI-less environments)')
