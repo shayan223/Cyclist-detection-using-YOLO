@@ -8,7 +8,7 @@ CONFIG_FILE_PATH = 'v4_augmented_10x_pdx_cyclist_dataset/data.yaml'  # or 'pdx_c
 # CONFIG_FILE_PATH = 'pdx_cyclist_dataset_3x/data.yaml'  # uncomment after running: python augment_dataset_3x.py --dataset-dir pdx_cyclist_dataset --output-dir pdx_cyclist_dataset_3x
 #MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model (options: rtdetr-l.pt, rtdetr-x.pt) USE THIS FOR FIRST TIME TRAINING
 MODEL_PATH = './cyclist_detection_rtdetr/rtdetr_finetune4/weights/best.pt' # pre-finetuned model on cyclist dataset, for further fine tuning on pdx dataset  
-EPOCHS = 15
+EPOCHS = 50
 BATCH = 8
 # Initial learning rate (lr0). Use a smaller value (e.g. 1e-4, 5e-5) for gentler fine-tuning.
 LR0 = 0.0001  # Ultralytics default; try 0.001 or 0.0001 for smaller updates
