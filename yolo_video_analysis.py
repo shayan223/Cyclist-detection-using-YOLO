@@ -506,7 +506,7 @@ def main():
                         default='auto',
                         choices=['yolo', 'rtdetr', 'auto'],
                         help="Model architecture: 'yolo' for YOLOv8, 'rtdetr' for RT-DETR, or 'auto' to infer from path")
-    parser.add_argument('--confidence', '-c', type=float, default=0.8, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.7, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.1, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--no-display', action='store_true',
                         help='Disable live OpenCV window (useful in headless/GUI-less environments)')

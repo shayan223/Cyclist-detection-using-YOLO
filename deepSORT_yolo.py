@@ -210,9 +210,11 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                     elif cls_int == 1:  # pedestrian
                         pedestrian_detections.append((bbox, float(conf), cls_int))
                 
-                # Update trackers only if there are detections (saves computation)
-                cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame) if cyclist_detections else []
-                pedestrian_tracks = pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame) if pedestrian_detections else []
+                # CRITICAL: Update trackers on EVERY frame, even with empty detections
+                # This ensures tracks age properly and are removed when max_age is exceeded
+                # Without this, tracks won't be removed correctly and tracking continuity suffers
+                cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame)
+                pedestrian_tracks = pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame)
                 
                 # Process and draw tracked objects
                 # Copy frame only when needed (for video writing, we need a copy to avoid modifying original)
@@ -344,6 +346,11 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 pass
         print(f"\nVideo processing completed!")
         print(f"Output saved to: {output_video_path}")
+        print(f"Frames processed: {frame_count}/{total_frames}")
+        if frame_count == total_frames:
+            print(f"✓ All frames processed successfully")
+        else:
+            print(f"⚠ Warning: Expected {total_frames} frames but processed {frame_count} frames")
         print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
         print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
 
@@ -354,10 +361,10 @@ def main():
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
     parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
     parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
-    parser.add_argument('--confidence', '-c', type=float, default=0.85, help='Confidence threshold (0.0-1.0)')
-    parser.add_argument('--iou', type=float, default=0.7, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
-    parser.add_argument('--max-age', type=int, default=15, help='Maximum frames to keep a track without update')
-    parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
+    parser.add_argument('--confidence', '-c', type=float, default=0.70, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--iou', type=float, default=0.3, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
+    parser.add_argument('--max-age', type=int, default=35, help='Maximum frames to keep a track without update')
+    parser.add_argument('--max-iou-distance', type=float, default=0.9, help='Maximum IOU distance for track association')
     parser.add_argument('--no-display', action='store_true', help='Disable live display (faster processing)')
     
     args = parser.parse_args()
