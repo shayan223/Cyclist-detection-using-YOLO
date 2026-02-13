@@ -3,6 +3,11 @@ Post Encroachment Time (PET) conflict zone detection.
 Uses a grid over the frame to detect when pedestrians and cyclists share or recently
 shared the same zone within a time window, computes PET, and outputs conflict events to CSV
 and a video with highlighted conflict zones.
+
+PET definition (standard): PET(A1,A2,CA) = t_entry(A2,CA) - t_exit(A1,CA), the time gap
+between one actor leaving and the other entering the conflict area; scale [0, inf) s.
+PET is undefined when both occupy the conflict area before either leaves (overlap).
+Reference: https://criticality-metrics.readthedocs.io/en/latest/time-scale/PET.html
 """
 import cv2
 import argparse
@@ -13,6 +18,9 @@ import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
@@ -100,28 +108,26 @@ def _neighbor_cells(r, c, grid_rows, grid_cols, include_self=True):
 
 def _build_heatmap_image(cell_pet_values, grid_rows, grid_cols, width, height, fps, max_pet_time, first_frame):
     """
-    Build a heatmap image: grid with average signed PET per cell.
-    Negative PET = overlap = higher risk = red; positive = lower risk = blue.
+    Build a heatmap: average standard PET per cell (PET in [0, inf), time gap).
+    Low PET = more critical = red; high PET = less critical = blue.
     Returns BGR image (faint overlay over first_frame).
     """
     max_sec = max_pet_time / fps if fps > 0 else 1.0
-    # Grid of average signed PET (seconds); NaN where no data
+    # Grid of average standard PET (seconds) per cell; NaN where no data
     heat = np.full((grid_rows, grid_cols), np.nan, dtype=np.float64)
     for (r, c), values in cell_pet_values.items():
         if 0 <= r < grid_rows and 0 <= c < grid_cols and values:
-            heat[r, c] = np.mean(values)
+            # Standard PET = |signed|; overlap (0) is most critical
+            heat[r, c] = np.mean([abs(v) for v in values])
 
-    # Normalize: signed PET in [-max_sec, max_sec] -> 0-255 for colormap
-    # 0 = most negative (red/high risk), 128 = zero, 255 = most positive (blue/lower risk)
+    # Normalize: standard PET in [0, max_sec] -> 0 = red (critical), high = blue (safe)
     heat_uint8 = np.full((grid_rows, grid_cols), 128, dtype=np.uint8)  # no-data = 128 (gray)
     valid = ~np.isnan(heat)
     if np.any(valid):
-        v = np.clip(heat[valid], -max_sec, max_sec)
-        # 0 -> 255 (red), 0.5 -> 128, 1 -> 0 (blue). So idx = (1 - (v + max_sec) / (2*max_sec)) * 255
-        norm = (v + max_sec) / (2.0 * max_sec)
-        heat_uint8[valid] = (255 * (1.0 - norm)).clip(0, 255).astype(np.uint8)
+        v = np.clip(heat[valid], 0.0, max_sec)
+        norm = v / max_sec  # 0 -> 0, max_sec -> 1
+        heat_uint8[valid] = (255 * (1.0 - norm)).clip(0, 255).astype(np.uint8)  # 0 PET -> 255 (red), high -> 0 (blue)
 
-    # OpenCV JET: 0=blue, 255=red. We have high uint8 = negative PET = risk, so we want red.
     heat_color = cv2.applyColorMap(heat_uint8, cv2.COLORMAP_JET)
     heat_color = cv2.resize(heat_color, (width, height), interpolation=cv2.INTER_NEAREST)
 
@@ -192,6 +198,9 @@ def process_video(
     # Per-cell signed PET values for heatmap (average PET per cell); negative = overlap = higher risk
     cell_pet_values = defaultdict(list)
 
+    # Per-frame PET values for "average PET over time" plot
+    frame_to_pets = defaultdict(list)
+
     # Only record when a cell newly enters conflict (not every frame) to get one row per incident
     conflict_cells_previous_frame = set()
 
@@ -227,6 +236,7 @@ def process_video(
                 conf=confidence_threshold,
                 iou=iou_threshold,
                 agnostic_nms=False,
+                verbose=False,
             )
 
             boxes_data = []
@@ -306,7 +316,12 @@ def process_video(
                 if not ped_list or not cyc_list:
                     continue
 
-                # PET: minimum absolute time difference and signed PET (negative = temporal overlap = higher risk)
+                # Post Encroachment Time (PET): time gap between one actor leaving and the other
+                # entering the conflict area (CA). Definition: PET(A1,A2,CA) = t_entry(A2,CA) - t_exit(A1,CA)
+                # with t_entry(A2) >= t_exit(A1); scale [0, inf) s. PET undefined when both occupy CA
+                # before either leaves (overlap). See: https://criticality-metrics.readthedocs.io/en/latest/time-scale/PET.html
+                # We use frame indices as proxies for presence in the cell; minimum gap over (ped,cyclist)
+                # pairs gives PET = |t2 - t1|/fps (standard PET, non-negative). Overlap = same frame -> PET undefined (we output 0).
                 pet_frames = None
                 signed_pet_frames = None
                 for (fp, idp) in ped_list:
@@ -314,7 +329,7 @@ def process_video(
                         d = abs(fp - fc)
                         if pet_frames is None or d < pet_frames:
                             pet_frames = d
-                            # Signed: pedestrian_frame - cyclist_frame; negative = cyclist later = overlap
+                            # Order: positive = ped exited before cyc entered (PET = (fc-fp)/fps); negative = overlap / cyc first
                             signed_pet_frames = fp - fc
                             best_ped_id = idp
                             best_cyclist_id = idc
@@ -323,9 +338,12 @@ def process_video(
                     continue
 
                 conflict_cells_this_frame.add((r, c))
-                pet_seconds = pet_frames / fps if fps > 0 else 0.0
+                # Standard PET (non-negative, seconds): time between one leaving and other entering
+                pet_seconds = (pet_frames / fps) if fps > 0 else 0.0
                 signed_pet_seconds = (signed_pet_frames / fps) if (fps > 0 and signed_pet_frames is not None) else 0.0
                 time_sec = frame_count / fps if fps > 0 else 0.0
+                overlap = pet_frames == 0  # PET undefined per definition when both in CA
+                frame_to_pets[frame_count].append(signed_pet_seconds)
 
                 # Record event when this cell newly enters conflict (not already in previous frame)
                 if (r, c) not in conflict_cells_previous_frame:
@@ -336,6 +354,7 @@ def process_video(
                         'cell_col': c,
                         'pet_frames': pet_frames,
                         'pet_seconds': round(pet_seconds, 3),
+                        'pet_undefined_overlap': overlap,
                         'signed_pet_frames': signed_pet_frames,
                         'signed_pet_seconds': round(signed_pet_seconds, 3),
                         'pedestrian_id': best_ped_id,
@@ -444,9 +463,54 @@ def process_video(
             )
             cv2.imwrite(output_heatmap_path, heatmap_img)
 
+    # Plot: average standard PET over time (PET = time gap [0, inf) s; lower = more critical)
+    output_plot_path = base + "_PET_over_time.png"
+    if frame_to_pets:
+        frames_sorted = sorted(frame_to_pets.keys())
+        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
+        # Standard PET = |signed| per value; average per frame
+        avg_pet_arr = np.array([
+            np.mean([abs(p) for p in frame_to_pets[f]]) for f in frames_sorted
+        ])
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylim(0, None)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Average PET (s)")
+        ax.set_title("Average PET over time (lower = more critical; PET = time gap between one leaving and other entering)")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(output_plot_path, dpi=150)
+        plt.close(fig)
+
+    # Plot: Risk = 1/(1+PET); higher risk when PET is low (critical). Standard definition: lower PET = more critical.
+    output_risk_plot_path = base + "_Risk_PET_over_time.png"
+    if frame_to_pets:
+        frames_sorted = sorted(frame_to_pets.keys())
+        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
+        # Risk = 1/(1+PET_standard); PET=0 (or overlap) -> risk=1, large PET -> risk~0
+        risk_per_frame = np.array([
+            np.mean([1.0 / (1.0 + abs(p)) for p in frame_to_pets[f]]) for f in frames_sorted
+        ])
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(time_sec_arr, risk_per_frame, color="crimson", linewidth=1)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Risk 1/(1+PET)")
+        ax.set_title("Risk over time (higher = lower PET = more critical)")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(output_risk_plot_path, dpi=150)
+        plt.close(fig)
+
     tqdm.write(f"Video:   {os.path.abspath(output_video_path)}")
     tqdm.write(f"CSV:     {os.path.abspath(output_csv_path)}")
     tqdm.write(f"Heatmap: {os.path.abspath(output_heatmap_path)}")
+    if frame_to_pets:
+        tqdm.write(f"Plot:    {os.path.abspath(output_plot_path)}")
+        tqdm.write(f"Risk:    {os.path.abspath(output_risk_plot_path)}")
 
     return df
 
