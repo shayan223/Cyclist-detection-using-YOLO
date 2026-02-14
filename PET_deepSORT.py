@@ -530,7 +530,7 @@ def main():
     parser.add_argument('--max-age', type=int, default=25, help='Max frames to keep track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Max IOU distance for association')
     parser.add_argument('--grid-size', type=int, default=20, help='N for NxN grid')
-    parser.add_argument('--max-pet-time', type=int, default=30, help='Max frames to keep occupancy (conflict window)')
+    parser.add_argument('--max-pet-time', type=int, default=10, help='Max frames to keep occupancy (conflict window)')
     parser.add_argument('--no-neighbors', action='store_true', help='Do not extend conflict to neighbor cells')
     parser.add_argument('--show-grid', action='store_true', help='Draw faint grid lines on output video (for tuning --grid-size N)')
     parser.add_argument('--heatmap', metavar='PATH', help='Output heatmap image path (default: output base + _PET_heatmap.png)')
