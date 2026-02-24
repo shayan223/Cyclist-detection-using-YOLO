@@ -10,6 +10,12 @@ BASE_MODEL_PATH  = "./yolo26n.pt"      # starting weights
 EPOCHS = 100
 BATCH  = 8
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+CONFIG_FILE_PATH = './v4_pdx_cyclist_dataset/data.yaml'#'Cyclist_Pedestrian_Dataset/data.yaml'#'eurocity_yolo/data.yaml'#'./training_data/dataset.yaml'#'./training_data/config.yaml'
+MODEL_PATH = './euro_pretrain_yolo26/best.pt'#'./yolo11n.pt'#'./yolo11n.pt' #'yolov8l.pt'  # Base YOLO model
+EPOCHS = 50
+BATCH = 8
+LR0 = 0.001  # Starting learning rate
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 GENERATE_VIDEO = True
 CONFIDENCE     = 0.85
@@ -20,6 +26,8 @@ NO_DISPLAY     = True
 
 PROJECT_DIR    = "cyclist_detection_yolo11n"
 RUN_NAME       = "yolo_finetune"
+def fine_tune_yolo(config_file_path, model_path, epochs, batch, lr0, device):
+    """Fine-tunes a YOLO model on the cyclist dataset."""
 
 VIDEO_INPUT_DIR    = "video/samples"
 VIDEO_OUTPUT_DIR   = "video/{}".format(RUN_NAME)
@@ -39,6 +47,11 @@ def fine_tune_yolo(config_file_path, model_path, epochs, batch, device):
         save_period=25,
         project=PROJECT_DIR,
         name=RUN_NAME,
+        lr0=lr0,  # Starting learning rate
+        patience=10,  # Stop training early if no improvement
+        save_period=10,  # Save model after each epoch
+        project="cyclist_detection_yolo26l",
+        name="yolo_finetune_pdx",
         resume=False
     )
 
@@ -115,7 +128,6 @@ def generate_inference_result(ckpt_path, input_dir, output_dir):
         )
 
     print("\nAll videos processed.")
-
 
 if __name__ == "__main__":
     ckpt_path = fine_tune_yolo(CONFIG_FILE_PATH, BASE_MODEL_PATH, EPOCHS, BATCH, DEVICE)
