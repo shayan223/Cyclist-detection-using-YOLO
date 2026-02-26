@@ -21,6 +21,7 @@ eurocity_yolo/
 /pdx_cyclist_dataset_coco/
 /v4_augmented_10x_pdx_cyclist_dataset/
 /v4_pdx_cyclist_dataset/
+/v4_pdx_cyclist_dataset_3x/
 *.pth
 *.pt
 *.onnx

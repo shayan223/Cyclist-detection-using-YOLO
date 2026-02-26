@@ -320,13 +320,13 @@ def main():
     parser.add_argument(
         "--dataset-dir",
         type=str,
-        default="pdx_cyclist_dataset",
+        default="v4_pdx_cyclist_dataset",
         help="Path to YOLO dataset (must contain data.yaml and train/images, train/labels).",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="pdx_cyclist_dataset_3x",
+        default="v4_pdx_cyclist_dataset_3x",
         help="Output dataset path (train will have Nx images, val/test copied as-is).",
     )
     parser.add_argument(

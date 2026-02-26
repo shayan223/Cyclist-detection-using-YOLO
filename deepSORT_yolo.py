@@ -114,26 +114,56 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
     cyclist_ids_seen = set()
     pedestrian_ids_seen = set()
     
-    # Setup video writer - try codecs in order (H264 often fails on Windows without OpenH264)
-    ext = os.path.splitext(output_video_path)[1].lower()
-    codecs_to_try = [
-        ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),  # mp4v works on most systems
-        ('H264', cv2.VideoWriter_fourcc(*'H264')),
-        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
-        ('avc1', cv2.VideoWriter_fourcc(*'avc1')),
-    ]
+    # Setup video writer with extension+codec fallbacks (Windows OpenCV can fail with no extension/H264).
+    output_dir = os.path.dirname(output_video_path)
+    if output_dir and not os.path.exists(output_dir):
+        raise RuntimeError(f"Output directory does not exist: {output_dir}")
+
+    requested_ext = os.path.splitext(output_video_path)[1].lower()
+    requested_base = os.path.splitext(output_video_path)[0] if requested_ext else output_video_path
+
+    writer_attempts = []
+    if requested_ext in ("", ".mp4"):
+        writer_attempts.extend([
+            (f"{requested_base}.mp4", "mp4v"),
+            (f"{requested_base}.mp4", "avc1"),
+            (f"{requested_base}.mp4", "H264"),
+            (f"{requested_base}.avi", "XVID"),
+            (f"{requested_base}.avi", "MJPG"),
+        ])
+    elif requested_ext == ".avi":
+        writer_attempts.extend([
+            (output_video_path, "XVID"),
+            (output_video_path, "MJPG"),
+            (f"{requested_base}.mp4", "mp4v"),
+        ])
+    else:
+        # Unknown extension: try requested path first, then common containers.
+        writer_attempts.extend([
+            (output_video_path, "mp4v"),
+            (f"{requested_base}.mp4", "mp4v"),
+            (f"{requested_base}.avi", "XVID"),
+        ])
+
     out = None
-    for codec_name, fourcc in codecs_to_try:
-        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    final_output_video_path = output_video_path
+    for candidate_path, codec_name in writer_attempts:
+        fourcc = cv2.VideoWriter_fourcc(*codec_name)
+        out = cv2.VideoWriter(candidate_path, fourcc, fps, (width, height))
         if out.isOpened():
+            final_output_video_path = candidate_path
             print(f"VideoWriter using codec: {codec_name}")
+            if final_output_video_path != output_video_path:
+                print(f"Output path adjusted to: {final_output_video_path}")
             break
         out.release()
         out = None
+
     if out is None:
+        attempted = ", ".join([f"{path} ({codec})" for path, codec in writer_attempts])
         raise RuntimeError(
-            "Could not create VideoWriter. Try installing OpenH264 or use a different output path. "
-            "See: https://github.com/cisco/openh264/releases"
+            f"Could not create VideoWriter. Tried: {attempted}. "
+            "Try installing OpenH264 (https://github.com/cisco/openh264/releases) or use a different output path."
         )
     
     frame_count = 0
@@ -343,7 +373,7 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
             except (cv2.error, Exception):
                 pass
         print(f"\nVideo processing completed!")
-        print(f"Output saved to: {output_video_path}")
+        print(f"Output saved to: {final_output_video_path}")
         print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
         print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
 
@@ -354,7 +384,7 @@ def main():
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
     parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
     parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
-    parser.add_argument('--confidence', '-c', type=float, default=0.85, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.6, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.7, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
     parser.add_argument('--max-age', type=int, default=15, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
