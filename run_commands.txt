@@ -1,0 +1,4 @@
+
+python fine_tune_yolo.py --ablation-protocol --run-ablation
+
+python deepSORT_yolo.py --model ./runs/detect/cyclist_detection_yolo26/ablation_2_train_aug_imgsz960_mos1.0_mix0.2_persp0.0008/weights/best.pt

@@ -4,6 +4,7 @@ import os
 from ultralytics import YOLO, RTDETR
 import torch
 import numpy as np
+from tqdm import tqdm
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from collections import defaultdict
 
@@ -58,6 +59,7 @@ def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None):
         "conf": conf_threshold,
         "iou": iou_threshold,
         "agnostic_nms": False,
+        "verbose": False,
     }
     if imgsz is not None:
         kwargs["imgsz"] = imgsz
@@ -392,6 +394,9 @@ def process_video(
     bg_x2 = min(width, text_x + max_text_width + padding)
     bg_y2 = min(height, text_y_pedestrian + padding)
     
+    progress_bar_total = total_frames if total_frames > 0 else None
+    progress_bar = tqdm(total=progress_bar_total, desc="Processing video", unit="frame")
+
     try:
         while True:
             if not paused:
@@ -543,9 +548,7 @@ def process_video(
                 out.write(annotated_frame)
                 
                 frame_count += 1
-                if frame_count % 30 == 0:  # Print progress every 30 frames
-                    progress = (frame_count / total_frames) * 100
-                    print(f"Processing frame {frame_count}/{total_frames} ({progress:.1f}%)")
+                progress_bar.update(1)
             
             # Display the frame (only if we have a frame to display and display is enabled)
             if display_available and annotated_frame is not None:
@@ -584,6 +587,7 @@ def process_video(
     
     finally:
         # Clean up
+        progress_bar.close()
         cap.release()
         out.release()
         if display_available:
@@ -598,27 +602,27 @@ def process_video(
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze video for cyclist and pedestrian tracking using YOLO or RT-DETR + DeepSORT')
-    parser.add_argument('--input', '-i', required=False, help='Input video file path', default='japan_long_cyclist_video.mp4')
+    parser.add_argument('--input', '-i', required=False, help='Input video file path', default='short_test_2.mp4')
     parser.add_argument('--output', '-o', help='Output video file path (default: input_tracked.mp4)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
     parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
     parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
-    parser.add_argument('--confidence', '-c', type=float, default=0.6, help='Confidence threshold (0.0-1.0)')
+    parser.add_argument('--confidence', '-c', type=float, default=0.65, help='Confidence threshold (0.0-1.0)')
     parser.add_argument('--iou', type=float, default=0.7, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.7')
-    parser.add_argument('--max-age', type=int, default=15, help='Maximum frames to keep a track without update')
+    parser.add_argument('--max-age', type=int, default=30, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
-    parser.add_argument('--no-display', action='store_true', help='Disable live display (faster processing)')
+    parser.add_argument('--no-display', action='store_true', default=True,help='Disable live display (faster processing)')
     parser.add_argument('--imgsz', type=int, default=0, help='Inference image size. 0 uses model default.')
     parser.add_argument('--crowd-mode', choices=['off', 'soft-nms'], default='off', help='Crowd-scene postprocess mode.')
-    parser.add_argument('--soft-nms-iou', type=float, default=0.5, help='Soft-NMS IoU threshold.')
-    parser.add_argument('--soft-nms-sigma', type=float, default=0.5, help='Soft-NMS Gaussian sigma.')
-    parser.add_argument('--top-region-pass', action='store_true', help='Run second high-res pass on upper image region.')
+    parser.add_argument('--soft-nms-iou', type=float, default=0.4, help='Soft-NMS IoU threshold.')
+    parser.add_argument('--soft-nms-sigma', type=float, default=0.3, help='Soft-NMS Gaussian sigma.')
+    parser.add_argument('--top-region-pass', action='store_true', default=True, help='Run second high-res pass on upper image region.')
     parser.add_argument('--top-region-ratio', type=float, default=0.35, help='Upper region ratio for second pass (0.0-1.0).')
     parser.add_argument('--top-region-imgsz', type=int, default=0, help='Top-region inference size. 0 uses --imgsz/model default.')
-    parser.add_argument('--top-region-confidence', type=float, default=-1.0, help='Top-region confidence threshold. Negative uses --confidence.')
+    parser.add_argument('--top-region-confidence', type=float, default=-1.0, help='Top-region confidence threshold. Negative 1.0 uses --confidence.')
     parser.add_argument('--tile-mode', choices=['off', 'sahi'], default='off', help='Optional tiled inference mode.')
-    parser.add_argument('--tile-size', type=int, default=960, help='Tile size (pixels) for tiled inference.')
-    parser.add_argument('--tile-overlap', type=float, default=0.2, help='Tile overlap fraction (0.0-0.8).')
+    parser.add_argument('--tile-size', type=int, default=480, help='Tile size (pixels) for tiled inference.')
+    parser.add_argument('--tile-overlap', type=float, default=0.5, help='Tile overlap fraction (0.0-0.8).')
     parser.add_argument('--tile-imgsz', type=int, default=0, help='Tile inference image size. 0 uses --imgsz/model default.')
     parser.add_argument('--tile-confidence', type=float, default=-1.0, help='Tile confidence threshold. Negative uses --confidence.')
     parser.add_argument('--debug-detections', action='store_true', help='Print per-pass detection counters every 10 frames.')
