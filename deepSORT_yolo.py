@@ -5,6 +5,7 @@ from ultralytics import YOLO, RTDETR
 import torch
 import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
+from collections import defaultdict
 
 # --- Configuration ---
 EXPERIMENT_NAME = 'pdx_rtdetr_finetune3'#'rtdetr_finetune4'#'yolo_finetune'
@@ -50,7 +51,197 @@ def load_model(model_path, device, use_rtdetr=None):
     print(f"Model loaded successfully on device: {device}")
     return model
 
-def process_video(input_video_path, output_video_path, model, confidence_threshold=0.9, max_age=30, max_iou_distance=0.7, iou_threshold=0.1, disable_display=False):
+
+def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None):
+    """Run one detector pass and return raw Ultralytics results."""
+    kwargs = {
+        "conf": conf_threshold,
+        "iou": iou_threshold,
+        "agnostic_nms": False,
+    }
+    if imgsz is not None:
+        kwargs["imgsz"] = imgsz
+    return model(image, **kwargs)
+
+
+def _extract_boxes(results, x_offset=0, y_offset=0, class_filter=None):
+    """Extract [x1, y1, x2, y2, conf, cls] from Ultralytics result list."""
+    detections = []
+    for result in results:
+        boxes = result.boxes
+        if boxes is None or len(boxes) == 0:
+            continue
+        boxes_xyxy = boxes.xyxy.cpu().numpy()
+        boxes_conf = boxes.conf.cpu().numpy()
+        boxes_cls = boxes.cls.cpu().numpy()
+        for (x1, y1, x2, y2), conf, cls in zip(boxes_xyxy, boxes_conf, boxes_cls):
+            cls_int = int(cls)
+            if class_filter is not None and cls_int not in class_filter:
+                continue
+            detections.append([
+                float(x1 + x_offset),
+                float(y1 + y_offset),
+                float(x2 + x_offset),
+                float(y2 + y_offset),
+                float(conf),
+                cls_int,
+            ])
+    return detections
+
+
+def _clip_detection(det, frame_w, frame_h):
+    """Clip detection to frame bounds; return None if invalid."""
+    x1, y1, x2, y2, conf, cls_int = det
+    x1 = max(0.0, min(float(frame_w - 1), x1))
+    y1 = max(0.0, min(float(frame_h - 1), y1))
+    x2 = max(0.0, min(float(frame_w - 1), x2))
+    y2 = max(0.0, min(float(frame_h - 1), y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [x1, y1, x2, y2, conf, cls_int]
+
+
+def _compute_iou_xyxy(a, b):
+    """Compute IoU for two [x1,y1,x2,y2,...] detections."""
+    ax1, ay1, ax2, ay2 = a[0], a[1], a[2], a[3]
+    bx1, by1, bx2, by2 = b[0], b[1], b[2], b[3]
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+    a_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    b_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    denom = a_area + b_area - inter
+    if denom <= 0.0:
+        return 0.0
+    return inter / denom
+
+
+def _soft_nms_per_class(detections, iou_threshold=0.5, sigma=0.5, score_threshold=1e-3):
+    """
+    Linear+Gaussian Soft-NMS on one class list.
+    Input/output format: [x1, y1, x2, y2, conf, cls].
+    """
+    dets = [d.copy() for d in detections]
+    kept = []
+    while dets:
+        dets.sort(key=lambda d: d[4], reverse=True)
+        best = dets.pop(0)
+        kept.append(best)
+        survivors = []
+        for det in dets:
+            iou = _compute_iou_xyxy(best, det)
+            if iou > iou_threshold:
+                # Strongly-overlapping boxes receive heavier confidence decay.
+                det[4] *= np.exp(-(iou * iou) / max(sigma, 1e-6))
+            if det[4] >= score_threshold:
+                survivors.append(det)
+        dets = survivors
+    return kept
+
+
+def _apply_crowd_postprocess(detections, crowd_mode, soft_nms_iou, soft_nms_sigma, score_threshold):
+    """Apply crowd-scene suppression strategy."""
+    if crowd_mode != "soft-nms":
+        return detections
+
+    by_class = defaultdict(list)
+    for det in detections:
+        by_class[int(det[5])].append(det)
+
+    merged = []
+    for class_dets in by_class.values():
+        merged.extend(
+            _soft_nms_per_class(
+                class_dets,
+                iou_threshold=soft_nms_iou,
+                sigma=soft_nms_sigma,
+                score_threshold=score_threshold,
+            )
+        )
+    return merged
+
+
+def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_threshold, imgsz, class_filter):
+    """Run detection on upper region and map boxes back to full-frame coordinates."""
+    h, _ = frame.shape[:2]
+    top_h = int(max(1, min(h, round(h * top_region_ratio))))
+    roi = frame[:top_h, :]
+    results = _run_detector(model, roi, conf_threshold, iou_threshold, imgsz=imgsz)
+    return _extract_boxes(results, x_offset=0, y_offset=0, class_filter=class_filter)
+
+
+def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap, imgsz, class_filter):
+    """Run a SAHI-style tiled inference pass and merge tiles in full-frame coords."""
+    h, w = frame.shape[:2]
+    tile = max(64, int(tile_size))
+    overlap = max(0.0, min(0.8, float(tile_overlap)))
+    stride = max(32, int(round(tile * (1.0 - overlap))))
+    detections = []
+
+    y_starts = list(range(0, max(1, h - tile + 1), stride))
+    x_starts = list(range(0, max(1, w - tile + 1), stride))
+    if not y_starts or y_starts[-1] != max(0, h - tile):
+        y_starts.append(max(0, h - tile))
+    if not x_starts or x_starts[-1] != max(0, w - tile):
+        x_starts.append(max(0, w - tile))
+
+    for y0 in y_starts:
+        for x0 in x_starts:
+            y1 = min(h, y0 + tile)
+            x1 = min(w, x0 + tile)
+            tile_img = frame[y0:y1, x0:x1]
+            if tile_img.size == 0:
+                continue
+            results = _run_detector(model, tile_img, conf_threshold, iou_threshold, imgsz=imgsz)
+            detections.extend(_extract_boxes(results, x_offset=x0, y_offset=y0, class_filter=class_filter))
+    return detections
+
+
+def _detections_to_tracker_inputs(detections):
+    """Split [xyxy, conf, cls] detections into per-class DeepSORT input format."""
+    cyclist_detections = []
+    pedestrian_detections = []
+    for x1, y1, x2, y2, conf, cls_int in detections:
+        bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
+        if bbox[2] <= 0 or bbox[3] <= 0:
+            continue
+        if cls_int == 0:
+            cyclist_detections.append((bbox, float(conf), cls_int))
+        elif cls_int == 1:
+            pedestrian_detections.append((bbox, float(conf), cls_int))
+    return cyclist_detections, pedestrian_detections
+
+
+def process_video(
+    input_video_path,
+    output_video_path,
+    model,
+    confidence_threshold=0.9,
+    max_age=30,
+    max_iou_distance=0.7,
+    iou_threshold=0.1,
+    disable_display=False,
+    imgsz=None,
+    crowd_mode="off",
+    soft_nms_iou=0.5,
+    soft_nms_sigma=0.5,
+    top_region_pass=False,
+    top_region_ratio=0.35,
+    top_region_imgsz=None,
+    top_region_confidence=None,
+    tile_mode="off",
+    tile_size=960,
+    tile_overlap=0.2,
+    tile_imgsz=None,
+    tile_confidence=None,
+    debug_detections=False,
+):
     """Process video: detect cyclists/pedestrians (YOLO or RT-DETR), track with DeepSORT, overlay boxes."""
     
     # Open input video
@@ -208,37 +399,57 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 if not ret:
                     break
                 
-                # Run detection (same API for YOLO and RT-DETR)
-                # Lower iou threshold (default 0.45) to prevent NMS from suppressing overlapping detections
-                # between different classes (cyclists and pedestrians)
-                results = model(frame, conf=confidence_threshold, iou=iou_threshold, agnostic_nms=False)
-                
-                # Prepare detections for tracking - pre-allocate with estimated capacity
-                # Batch CPU-GPU transfers for better performance
-                boxes_data = []
-                for result in results:
-                    boxes = result.boxes
-                    if boxes is not None and len(boxes) > 0:
-                        # Batch convert all boxes at once (more efficient than per-box conversion)
-                        boxes_xyxy = boxes.xyxy.cpu().numpy()
-                        boxes_conf = boxes.conf.cpu().numpy()
-                        boxes_cls = boxes.cls.cpu().numpy()
-                        boxes_data.extend(zip(boxes_xyxy, boxes_conf, boxes_cls))
-                
-                # Pre-allocate lists with estimated capacity (Python lists grow dynamically, but this helps)
-                cyclist_detections = []
-                pedestrian_detections = []
-                
-                # Extract detections - optimized conversion
-                for (x1, y1, x2, y2), conf, cls in boxes_data:
-                    cls_int = int(cls)
-                    # DeepSORT expects format: ([left, top, width, height], confidence, class_id)
-                    bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
-                    
-                    if cls_int == 0:  # cyclist
-                        cyclist_detections.append((bbox, float(conf), cls_int))
-                    elif cls_int == 1:  # pedestrian
-                        pedestrian_detections.append((bbox, float(conf), cls_int))
+                frame_h, frame_w = frame.shape[:2]
+                class_filter = {0, 1}
+
+                # Pass 1: full-frame detection.
+                full_results = _run_detector(model, frame, confidence_threshold, iou_threshold, imgsz=imgsz)
+                full_dets = _extract_boxes(full_results, class_filter=class_filter)
+
+                # Pass 2: optional top-region high-resolution pass.
+                top_dets = []
+                if top_region_pass:
+                    top_conf = confidence_threshold if top_region_confidence is None else top_region_confidence
+                    top_dets = _run_top_region_pass(
+                        frame,
+                        model,
+                        iou_threshold=iou_threshold,
+                        top_region_ratio=top_region_ratio,
+                        conf_threshold=top_conf,
+                        imgsz=top_region_imgsz,
+                        class_filter=class_filter,
+                    )
+
+                # Pass 3: optional SAHI-style tiled pass.
+                tile_dets = []
+                if tile_mode == "sahi":
+                    tile_conf = confidence_threshold if tile_confidence is None else tile_confidence
+                    tile_dets = _run_tiled_pass(
+                        frame,
+                        model,
+                        iou_threshold=iou_threshold,
+                        conf_threshold=tile_conf,
+                        tile_size=tile_size,
+                        tile_overlap=tile_overlap,
+                        imgsz=tile_imgsz,
+                        class_filter=class_filter,
+                    )
+
+                merged_dets = []
+                for det in full_dets + top_dets + tile_dets:
+                    clipped = _clip_detection(det, frame_w=frame_w, frame_h=frame_h)
+                    if clipped is not None:
+                        merged_dets.append(clipped)
+
+                processed_dets = _apply_crowd_postprocess(
+                    merged_dets,
+                    crowd_mode=crowd_mode,
+                    soft_nms_iou=soft_nms_iou,
+                    soft_nms_sigma=soft_nms_sigma,
+                    score_threshold=confidence_threshold * 0.25,
+                )
+
+                cyclist_detections, pedestrian_detections = _detections_to_tracker_inputs(processed_dets)
                 
                 # Update trackers only if there are detections (saves computation)
                 cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame) if cyclist_detections else []
@@ -302,8 +513,16 @@ def process_video(input_video_path, output_video_path, model, confidence_thresho
                 
                 # Print counts to console (less frequently for better performance)
                 if frame_count % 10 == 0:  # Print every 10 frames instead of every frame
-                    print(f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) | "
-                          f"Total unique: {len(cyclist_ids_seen)} cyclists, {len(pedestrian_ids_seen)} pedestrians")
+                    msg = (
+                        f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) | "
+                        f"Total unique: {len(cyclist_ids_seen)} cyclists, {len(pedestrian_ids_seen)} pedestrians"
+                    )
+                    if debug_detections:
+                        msg += (
+                            f" | dets full={len(full_dets)} top={len(top_dets)} "
+                            f"tile={len(tile_dets)} merged={len(merged_dets)} final={len(processed_dets)}"
+                        )
+                    print(msg)
                 
                 # Draw counts on video (lower right corner)
                 cyclist_text = f"Cyclists: {cyclist_count} (Total: {len(cyclist_ids_seen)})"
@@ -385,12 +604,39 @@ def main():
     parser.add_argument('--yolo', action='store_true', help='Force YOLO backend (default: auto-detect from path)')
     parser.add_argument('--rtdetr', action='store_true', help='Force RT-DETR backend (default: auto-detect from path)')
     parser.add_argument('--confidence', '-c', type=float, default=0.6, help='Confidence threshold (0.0-1.0)')
-    parser.add_argument('--iou', type=float, default=0.7, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.3')
+    parser.add_argument('--iou', type=float, default=0.7, help='NMS IoU threshold (0.0-1.0). Lower values allow more overlapping detections. Default: 0.7')
     parser.add_argument('--max-age', type=int, default=15, help='Maximum frames to keep a track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Maximum IOU distance for track association')
     parser.add_argument('--no-display', action='store_true', help='Disable live display (faster processing)')
+    parser.add_argument('--imgsz', type=int, default=0, help='Inference image size. 0 uses model default.')
+    parser.add_argument('--crowd-mode', choices=['off', 'soft-nms'], default='off', help='Crowd-scene postprocess mode.')
+    parser.add_argument('--soft-nms-iou', type=float, default=0.5, help='Soft-NMS IoU threshold.')
+    parser.add_argument('--soft-nms-sigma', type=float, default=0.5, help='Soft-NMS Gaussian sigma.')
+    parser.add_argument('--top-region-pass', action='store_true', help='Run second high-res pass on upper image region.')
+    parser.add_argument('--top-region-ratio', type=float, default=0.35, help='Upper region ratio for second pass (0.0-1.0).')
+    parser.add_argument('--top-region-imgsz', type=int, default=0, help='Top-region inference size. 0 uses --imgsz/model default.')
+    parser.add_argument('--top-region-confidence', type=float, default=-1.0, help='Top-region confidence threshold. Negative uses --confidence.')
+    parser.add_argument('--tile-mode', choices=['off', 'sahi'], default='off', help='Optional tiled inference mode.')
+    parser.add_argument('--tile-size', type=int, default=960, help='Tile size (pixels) for tiled inference.')
+    parser.add_argument('--tile-overlap', type=float, default=0.2, help='Tile overlap fraction (0.0-0.8).')
+    parser.add_argument('--tile-imgsz', type=int, default=0, help='Tile inference image size. 0 uses --imgsz/model default.')
+    parser.add_argument('--tile-confidence', type=float, default=-1.0, help='Tile confidence threshold. Negative uses --confidence.')
+    parser.add_argument('--debug-detections', action='store_true', help='Print per-pass detection counters every 10 frames.')
     
     args = parser.parse_args()
+
+    if not (0.0 <= args.confidence <= 1.0):
+        print("Error: --confidence must be in [0.0, 1.0]")
+        return
+    if not (0.0 <= args.iou <= 1.0):
+        print("Error: --iou must be in [0.0, 1.0]")
+        return
+    if not (0.0 < args.top_region_ratio <= 1.0):
+        print("Error: --top-region-ratio must be in (0.0, 1.0]")
+        return
+    if not (0.0 <= args.tile_overlap <= 0.8):
+        print("Error: --tile-overlap must be in [0.0, 0.8]")
+        return
     
     # Resolve model type: explicit flag overrides auto-detect
     use_rtdetr = None
@@ -426,11 +672,48 @@ def main():
     print(f"Output: {args.output}")
     print(f"Confidence threshold: {args.confidence}")
     print(f"NMS IoU threshold: {args.iou}")
+    print(f"Inference imgsz: {'model default' if args.imgsz <= 0 else args.imgsz}")
+    print(f"Crowd mode: {args.crowd_mode}")
+    if args.crowd_mode == 'soft-nms':
+        print(f"Soft-NMS: iou={args.soft_nms_iou}, sigma={args.soft_nms_sigma}")
+    print(f"Top-region pass: {'Enabled' if args.top_region_pass else 'Disabled'}")
+    if args.top_region_pass:
+        top_imgsz = args.top_region_imgsz if args.top_region_imgsz > 0 else (args.imgsz if args.imgsz > 0 else 'model default')
+        top_conf = args.top_region_confidence if args.top_region_confidence >= 0 else args.confidence
+        print(f"Top-region settings: ratio={args.top_region_ratio}, imgsz={top_imgsz}, conf={top_conf}")
+    print(f"Tile mode: {args.tile_mode}")
+    if args.tile_mode == 'sahi':
+        tile_imgsz = args.tile_imgsz if args.tile_imgsz > 0 else (args.imgsz if args.imgsz > 0 else 'model default')
+        tile_conf = args.tile_confidence if args.tile_confidence >= 0 else args.confidence
+        print(f"Tile settings: size={args.tile_size}, overlap={args.tile_overlap}, imgsz={tile_imgsz}, conf={tile_conf}")
     print(f"Max age: {args.max_age} frames")
     print(f"Max IOU distance: {args.max_iou_distance}")
     print(f"Display: {'Disabled' if args.no_display else 'Enabled'}")
     
-    process_video(args.input, args.output, model, args.confidence, args.max_age, args.max_iou_distance, args.iou, args.no_display)
+    process_video(
+        args.input,
+        args.output,
+        model,
+        args.confidence,
+        args.max_age,
+        args.max_iou_distance,
+        args.iou,
+        args.no_display,
+        imgsz=(args.imgsz if args.imgsz > 0 else None),
+        crowd_mode=args.crowd_mode,
+        soft_nms_iou=args.soft_nms_iou,
+        soft_nms_sigma=args.soft_nms_sigma,
+        top_region_pass=args.top_region_pass,
+        top_region_ratio=args.top_region_ratio,
+        top_region_imgsz=(args.top_region_imgsz if args.top_region_imgsz > 0 else (args.imgsz if args.imgsz > 0 else None)),
+        top_region_confidence=(args.top_region_confidence if args.top_region_confidence >= 0 else None),
+        tile_mode=args.tile_mode,
+        tile_size=args.tile_size,
+        tile_overlap=args.tile_overlap,
+        tile_imgsz=(args.tile_imgsz if args.tile_imgsz > 0 else (args.imgsz if args.imgsz > 0 else None)),
+        tile_confidence=(args.tile_confidence if args.tile_confidence >= 0 else None),
+        debug_detections=args.debug_detections,
+    )
 
 if __name__ == "__main__":
     main()

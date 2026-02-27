@@ -25,4 +25,4 @@ eurocity_yolo/
 *.pth
 *.pt
 *.onnx
-/*pdx_cyclist_dataset/*
+/*pdx_cyclist_dataset*/*
