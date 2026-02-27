@@ -225,9 +225,31 @@ class MovementDetector:
             raise ValueError("Percentage must be between 0 and 100")
         target_frame = int(self.total_frames * percent / 100.0)
         target_frame = min(target_frame, self.total_frames - 1)  # Ensure within bounds
+        
+        # OpenCV seek can fail silently with some codecs/containers.
+        # Try frame-based seek first, then timestamp-based seek, then a grab fallback.
+        seek_tolerance = max(2, int(self.fps * 0.25))  # ~250ms tolerance
+        
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        self.current_frame_number = target_frame
-        return target_frame
+        actual_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        
+        if abs(actual_frame - target_frame) > seek_tolerance and self.fps > 0:
+            target_msec = (target_frame / self.fps) * 1000.0
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, target_msec)
+            actual_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        
+        if abs(actual_frame - target_frame) > seek_tolerance:
+            # Final fallback: rewind and advance using decoder grabs.
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            grabbed = 0
+            while grabbed < target_frame:
+                if not self.cap.grab():
+                    break
+                grabbed += 1
+            actual_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        
+        self.current_frame_number = actual_frame
+        return actual_frame
     
     def parse_timestamp_value(self, value_str):
         """
@@ -1157,6 +1179,7 @@ class MovementDetector:
         
         # Set starting position if specified
         start_percent = getattr(self, 'start_percent', None)
+        start_frame = self.current_frame_number
         if start_percent is not None and start_percent > 0:
             start_frame = self.set_video_position_percent(start_percent)
             print(f"Starting video at {start_percent}% (frame {start_frame})")
@@ -1251,20 +1274,37 @@ class MovementDetector:
         
         # Initialize progress bar (works in both headless and normal mode)
         progress_bar = None
+        progress_start_frame = self.current_frame_number
+        progress_total_frames = max(0, self.total_frames - progress_start_frame)
         if TQDM_AVAILABLE:
-            # Adjust total for progress bar based on starting position
-            start_frame = self.current_frame_number
-            remaining_frames = self.total_frames - start_frame
-            progress_bar = tqdm(total=remaining_frames, initial=0, desc="Scanning", unit="frame",
+            progress_bar = tqdm(total=progress_total_frames, initial=0, desc="Scanning", unit="frame",
                               bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
                               file=sys.stdout, disable=False)
+        
+        def sync_progress_bar():
+            if progress_bar is None:
+                return
+            processed_frames = frame_count - progress_start_frame
+            processed_frames = max(0, min(progress_total_frames, processed_frames))
+            progress_bar.n = processed_frames
+            progress_bar.set_postfix({'detections': len(self.movement_timestamps), 'saved': self.saved_count})
+            progress_bar.refresh()
         
         # Terminal input handling for headless mode
         terminal_continue_pending = False
         
-        # If timestamp list is provided, jump to first timestamp and pause
+        # If timestamp list is provided, jump to first matching timestamp and pause
+        # Respect --start-percent by jumping to the first timestamp at/after start_frame.
         if self.timestamp_list:
-            if self.jump_to_next_timestamp():
+            target_timestamp_index = None
+            for idx, (ts_frame, _) in enumerate(self.timestamp_list):
+                if ts_frame >= start_frame:
+                    target_timestamp_index = idx
+                    break
+            
+            if target_timestamp_index is None:
+                print(f"No timestamps found at or after start frame {start_frame}. Continuing from current position.")
+            elif self.jump_to_timestamp(target_timestamp_index):
                 frame_count = self.current_frame_number
                 ret, frame = self.cap.read()
                 if ret:
@@ -1402,11 +1442,8 @@ class MovementDetector:
                     callback_params['box_start'] = self.box_start
                     callback_params['current_box'] = self.current_box
             
-            # Update progress bar (works in both headless and normal mode)
-            if progress_bar is not None and not paused:
-                progress_bar.update(1)
-                progress_bar.set_postfix({'detections': len(self.movement_timestamps), 'saved': self.saved_count})
-                progress_bar.refresh()  # Force refresh to ensure visibility
+            # Keep progress in sync with actual frame position (including jumps/seeks).
+            sync_progress_bar()
             
             # Skip rendering during headless scanning (only render when paused)
             # Also skip rendering if this frame shouldn't be displayed due to playback speed
@@ -1627,6 +1664,9 @@ class MovementDetector:
                         # Clear selections
                         self.selected_boxes.clear()
                         self.manual_boxes.clear()
+                        paused_bounding_boxes = []
+                        callback_params['detected_boxes'] = []
+                        paused_display_motion = False
                         print("Cleared selections")
                     elif key == ord('t'):
                         # Toggle annotation class (cyclist <-> pedestrian)
@@ -1900,11 +1940,11 @@ def main():
                        help='Minimum distance between objects as ratio of avg size (lower = allow closer, default: 0.4)')
     parser.add_argument('--max-objects', type=int, default=3,
                        help='Maximum number of objects to keep per frame (default: 3)')
-    parser.add_argument('--dataset-dir', type=str, default='pdx_cyclist_dataset',
-                       help='Directory to save dataset (default: pdx_cyclist_dataset)')
+    parser.add_argument('--dataset-dir', type=str, default='v4_pdx_cyclist_dataset',
+                       help='Directory to save dataset (default: v4_pdx_cyclist_dataset)')
     parser.add_argument('--no-auto-pause', action='store_true',
                        help='Disable auto-pause on motion detection')
-    parser.add_argument('--headless-scan', action='store_true',
+    parser.add_argument('--headless-scan', action='store_true',default=True,
                        help='Scan in terminal with progress bar, only show GUI on detections (saves IO/compute)')
     parser.add_argument('--start-percent', type=float, default=0.0,
                        help='Start video at this percentage (0-100, default: 0)')
