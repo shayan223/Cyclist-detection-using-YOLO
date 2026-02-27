@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import inspect
 import os
@@ -174,7 +176,7 @@ def main():
     parser.add_argument(
         "--model-size",
         choices=list(MODEL_MAP.keys()),
-        default=None,
+        default='RFDETRLarge',
         help="RF-DETR model size. Default is RFDETRLarge unless inferred from --pretrain-weights.",
     )
     parser.add_argument(
@@ -185,10 +187,10 @@ def main():
     )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--grad-accum-steps", type=int, default=4)
+    parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr-encoder", type=float, default=None)
-    parser.add_argument("--resolution", type=int, default=960)
+    parser.add_argument("--resolution", type=int, default=672)
     parser.add_argument(
         "--device",
         type=str,
