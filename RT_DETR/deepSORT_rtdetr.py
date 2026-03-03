@@ -524,7 +524,7 @@ def process_video(
 
 def main():
     parser = argparse.ArgumentParser(description="RT-DETR + DeepSORT cyclist/pedestrian tracking.")
-    parser.add_argument("--input", "-i", default="../trim_3.mp4", help="Input video path.")
+    parser.add_argument("--input", "-i", default="../trim6.mp4", help="Input video path.")
     parser.add_argument("--output", "-o", default="", help="Output video path.")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL_PATH, help="RT-DETR .pt checkpoint path.")
     parser.add_argument("--confidence", "-c", type=float, default=0.65, help="Detection confidence threshold.")

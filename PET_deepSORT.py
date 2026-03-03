@@ -27,7 +27,8 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # --- Configuration ---
 BATCH = 8
-DEFAULT_MODEL_PATH = './50epoch_yolo_finetune_pdx3/weights/best.pt'
+#'./50epoch_yolo_finetune_pdx3/weights/best.pt'
+DEFAULT_MODEL_PATH =  './RT_DETR/runs/detect/cyclist_detection_rtdetr/rtdetr_finetune_imgsz640_mos1.0_mix0.15_fliplr0.52/weights/best.pt'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
@@ -106,6 +107,58 @@ def _neighbor_cells(r, c, grid_rows, grid_cols, include_self=True):
     return out
 
 
+def _select_grid_cell_for_pet(frame, grid_rows, grid_cols, window_name="Select PET grid cell"):
+    """
+    Let the user select a single grid cell by clicking on the frame.
+    Returns (row, col) or None if selection fails or is cancelled.
+    """
+    height, width = frame.shape[:2]
+    cell_w = width / grid_cols
+    cell_h = height / grid_rows
+    selected = {'cell': None}
+
+    def _on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            c = int(x / cell_w)
+            r = int(y / cell_h)
+            if 0 <= r < grid_rows and 0 <= c < grid_cols:
+                selected['cell'] = (r, c)
+
+    try:
+        display = frame.copy()
+        for i in range(1, grid_rows):
+            y = int(i * cell_h)
+            cv2.line(display, (0, y), (width, y), (60, 60, 60), 1)
+        for j in range(1, grid_cols):
+            x = int(j * cell_w)
+            cv2.line(display, (x, 0), (x, height), (60, 60, 60), 1)
+
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _on_mouse)
+
+        while True:
+            img = display.copy()
+            if selected['cell'] is not None:
+                r, c = selected['cell']
+                x1 = int(c * cell_w)
+                y1 = int(r * cell_h)
+                x2 = int((c + 1) * cell_w)
+                y2 = int((r + 1) * cell_h)
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.imshow(window_name, img)
+            key = cv2.waitKey(20) & 0xFF
+            if selected['cell'] is not None and key in (13, 32, ord('q'), 27):
+                break
+        cv2.destroyWindow(window_name)
+        return selected['cell']
+    except (cv2.error, Exception):
+        try:
+            cv2.destroyWindow(window_name)
+        except (cv2.error, Exception):
+            pass
+        return None
+
+
 def _build_heatmap_image(cell_pet_values, grid_rows, grid_cols, width, height, fps, max_pet_time, first_frame):
     """
     Build a heatmap: average standard PET per cell (PET in [0, inf), time gap).
@@ -154,6 +207,7 @@ def process_video(
     output_heatmap_path=None,
     disable_display=True,
     show_grid=False,
+    single_cell_mode=False,
 ):
     """
     Process video: detect and track cyclists/pedestrians, maintain grid occupancy
@@ -163,12 +217,38 @@ def process_video(
     if not cap.isOpened():
         raise ValueError(f"Error: Could not open video file {input_video_path}")
 
+    grid_rows = grid_cols = grid_size
+    selected_cell = None
+
+    if single_cell_mode:
+        ret_sel, frame_sel = cap.read()
+        if ret_sel and frame_sel is not None:
+            tqdm.write(
+                "Select a grid cell by clicking on the frame; "
+                "press Enter/Space or q/ESC to confirm."
+            )
+            chosen = _select_grid_cell_for_pet(frame_sel, grid_rows, grid_cols)
+            if chosen is not None:
+                selected_cell = chosen
+                tqdm.write(
+                    f"Using single grid cell (row={selected_cell[0]}, col={selected_cell[1]}) "
+                    "for PET computation."
+                )
+            else:
+                tqdm.write("No grid cell selected; falling back to full-grid PET computation.")
+        else:
+            tqdm.write("Could not read first frame for grid selection; falling back to full-grid PET computation.")
+
+        cap.release()
+        cap = cv2.VideoCapture(input_video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Error: Could not re-open video file {input_video_path} after grid selection")
+
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    grid_rows = grid_cols = grid_size
     cell_w = width / grid_cols
     cell_h = height / grid_rows
 
@@ -298,7 +378,10 @@ def process_video(
             # Detect conflict: for each cell (and optionally its neighbors), check if both
             # pedestrian and cyclist have timestamps in the window; compute PET and record.
             conflict_cells_this_frame = set()
-            cells_to_check = set(grid_occupancy.keys())
+            if selected_cell is not None:
+                cells_to_check = {selected_cell} if selected_cell in grid_occupancy else set()
+            else:
+                cells_to_check = set(grid_occupancy.keys())
 
             for (r, c) in list(cells_to_check):
                 if (r, c) in conflict_cells_this_frame:
@@ -306,7 +389,10 @@ def process_video(
                 # Aggregate timestamps from this cell and optionally its 3x3 neighbors
                 ped_list = []
                 cyc_list = []
-                cells_region = _neighbor_cells(r, c, grid_rows, grid_cols, include_self=True) if use_neighbors else {(r, c)}
+                if use_neighbors and not single_cell_mode:
+                    cells_region = _neighbor_cells(r, c, grid_rows, grid_cols, include_self=True)
+                else:
+                    cells_region = {(r, c)}
                 for (nr, nc) in cells_region:
                     if (nr, nc) not in grid_occupancy:
                         continue
@@ -466,12 +552,14 @@ def process_video(
     # Plot: average standard PET over time (PET = time gap [0, inf) s; lower = more critical)
     output_plot_path = base + "_PET_over_time.png"
     if frame_to_pets:
-        frames_sorted = sorted(frame_to_pets.keys())
-        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
-        # Standard PET = |signed| per value; average per frame
-        avg_pet_arr = np.array([
-            np.mean([abs(p) for p in frame_to_pets[f]]) for f in frames_sorted
-        ])
+        # Build series covering the full processed video duration (all frames 0..frame_count-1)
+        frames_all = np.arange(frame_count, dtype=int)
+        time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
+        # Standard PET = |signed| per value; average per frame; NaN where no PET events
+        avg_pet_arr = np.full_like(time_sec_arr, np.nan, dtype=float)
+        for f, vals in frame_to_pets.items():
+            if 0 <= f < frame_count and vals:
+                avg_pet_arr[f] = np.mean([abs(p) for p in vals])
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
@@ -487,12 +575,15 @@ def process_video(
     # Plot: Risk = 1/(1+PET); higher risk when PET is low (critical). Standard definition: lower PET = more critical.
     output_risk_plot_path = base + "_Risk_PET_over_time.png"
     if frame_to_pets:
-        frames_sorted = sorted(frame_to_pets.keys())
-        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
+        # Build risk series over the full processed duration (all frames 0..frame_count-1)
+        frames_all = np.arange(frame_count, dtype=int)
+        time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
         # Risk = 1/(1+PET_standard); PET=0 (or overlap) -> risk=1, large PET -> risk~0
-        risk_per_frame = np.array([
-            np.mean([1.0 / (1.0 + abs(p)) for p in frame_to_pets[f]]) for f in frames_sorted
-        ])
+        # For frames with no PET events we set risk=0 (no observed conflict).
+        risk_per_frame = np.zeros_like(time_sec_arr, dtype=float)
+        for f, vals in frame_to_pets.items():
+            if 0 <= f < frame_count and vals:
+                risk_per_frame[f] = np.mean([1.0 / (1.0 + abs(p)) for p in vals])
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(time_sec_arr, risk_per_frame, color="crimson", linewidth=1)
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
@@ -519,7 +610,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='PET conflict zone detection: grid-based pedestrian/cyclist overlap with Post Encroachment Time'
     )
-    parser.add_argument('--input', '-i', required=False, default='trim4.mp4', help='Input video path')
+    parser.add_argument('--input', '-i', required=False, default='trim5.mp4', help='Input video path')
     parser.add_argument('--output', '-o', help='Output video path (default: input_PET_conflicts.mp4)')
     parser.add_argument('--csv', help='Output CSV path (default: output base + _PET_conflicts.csv)')
     parser.add_argument('--model', '-m', default=DEFAULT_MODEL_PATH, help='Model path (YOLO or RT-DETR .pt)')
@@ -533,6 +624,11 @@ def main():
     parser.add_argument('--max-pet-time', type=int, default=10, help='Max frames to keep occupancy (conflict window)')
     parser.add_argument('--no-neighbors', action='store_true', help='Do not extend conflict to neighbor cells')
     parser.add_argument('--show-grid', action='store_true', help='Draw faint grid lines on output video (for tuning --grid-size N)')
+    parser.add_argument(
+        '--no-grid',
+        action='store_true',
+        help='Use only a single user-selected grid cell for PET (disables neighbor-based conflicts)',
+    )
     parser.add_argument('--heatmap', metavar='PATH', help='Output heatmap image path (default: output base + _PET_heatmap.png)')
     parser.add_argument('--display', action='store_true', help='Show live window (default: off for speed)')
 
@@ -575,6 +671,7 @@ def main():
         output_heatmap_path=args.heatmap,
         disable_display=not args.display,
         show_grid=args.show_grid,
+        single_cell_mode=args.no_grid,
     )
 
 
