@@ -26,3 +26,6 @@ eurocity_yolo/
 *.pt
 *.onnx
 /*pdx_cyclist_dataset*/*
+/raw_pdx_videos
+/RF_DETR/__pycache__
+/RF_DETR/__pycache__
