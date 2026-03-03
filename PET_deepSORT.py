@@ -562,9 +562,6 @@ def process_video(
                 avg_pet_arr[f] = np.mean([abs(p) for p in vals])
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
-        # Ensure x-axis spans entire video duration, even where PET is undefined (NaN)
-        if len(time_sec_arr) > 0:
-            ax.set_xlim(time_sec_arr[0], time_sec_arr[-1])
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax.set_ylim(0, None)
         ax.set_xlabel("Time (s)")
@@ -578,15 +575,12 @@ def process_video(
     # Plot: Risk = 1/(1+PET); higher risk when PET is low (critical). Standard definition: lower PET = more critical.
     output_risk_plot_path = base + "_Risk_PET_over_time.png"
     if frame_to_pets:
-        # Build risk series over the full processed duration (all frames 0..frame_count-1)
-        frames_all = np.arange(frame_count, dtype=int)
-        time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
+        frames_sorted = sorted(frame_to_pets.keys())
+        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
         # Risk = 1/(1+PET_standard); PET=0 (or overlap) -> risk=1, large PET -> risk~0
-        # For frames with no PET events we set risk=0 (no observed conflict).
-        risk_per_frame = np.zeros_like(time_sec_arr, dtype=float)
-        for f, vals in frame_to_pets.items():
-            if 0 <= f < frame_count and vals:
-                risk_per_frame[f] = np.mean([1.0 / (1.0 + abs(p)) for p in vals])
+        risk_per_frame = np.array([
+            np.mean([1.0 / (1.0 + abs(p)) for p in frame_to_pets[f]]) for f in frames_sorted
+        ])
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(time_sec_arr, risk_per_frame, color="crimson", linewidth=1)
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
@@ -623,7 +617,7 @@ def main():
     parser.add_argument('--iou', type=float, default=0.3, help='NMS IoU threshold')
     parser.add_argument('--max-age', type=int, default=25, help='Max frames to keep track without update')
     parser.add_argument('--max-iou-distance', type=float, default=0.7, help='Max IOU distance for association')
-    parser.add_argument('--grid-size', type=int, default=20, help='N for NxN grid')
+    parser.add_argument('--grid-size', type=int, default=100, help='N for NxN grid')
     parser.add_argument('--max-pet-time', type=int, default=10, help='Max frames to keep occupancy (conflict window)')
     parser.add_argument('--no-neighbors', action='store_true', help='Do not extend conflict to neighbor cells')
     parser.add_argument('--show-grid', action='store_true', help='Draw faint grid lines on output video (for tuning --grid-size N)')
