@@ -562,6 +562,9 @@ def process_video(
                 avg_pet_arr[f] = np.mean([abs(p) for p in vals])
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
+        # Ensure x-axis spans entire video duration, even where PET is undefined (NaN)
+        if len(time_sec_arr) > 0:
+            ax.set_xlim(time_sec_arr[0], time_sec_arr[-1])
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax.set_ylim(0, None)
         ax.set_xlabel("Time (s)")
