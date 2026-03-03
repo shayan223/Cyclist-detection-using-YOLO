@@ -176,7 +176,7 @@ def main():
     parser.add_argument(
         "--model-size",
         choices=list(MODEL_MAP.keys()),
-        default='RFDETRLarge',
+        default='RFDETRSmall',
         help="RF-DETR model size. Default is RFDETRLarge unless inferred from --pretrain-weights.",
     )
     parser.add_argument(
@@ -186,11 +186,11 @@ def main():
         help="Optional checkpoint path for continued fine-tuning.",
     )
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr-encoder", type=float, default=None)
-    parser.add_argument("--resolution", type=int, default=672)
+    parser.add_argument("--resolution", type=int, default=576) #Should be divisible by 56
     parser.add_argument(
         "--device",
         type=str,

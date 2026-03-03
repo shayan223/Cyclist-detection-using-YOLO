@@ -8,10 +8,14 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from deep_sort_realtime.deepsort_tracker import DeepSort
 from tqdm import tqdm
 
 from rfdetr import RFDETRLarge, RFDETRMedium, RFDETRNano, RFDETRSmall
+
+try:
+    from deep_sort_realtime.deepsort_tracker import DeepSort
+except ImportError:
+    DeepSort = None
 
 MODEL_MAP = {
     "RFDETRNano": RFDETRNano,
@@ -129,6 +133,21 @@ def _soft_nms_per_class(detections, iou_threshold=0.5, sigma=0.5, score_threshol
     return kept
 
 
+def _hard_nms_per_class(detections, iou_threshold=0.45):
+    """Greedy hard NMS per class. Always applied to remove cross-pass/tile duplicate boxes."""
+    by_class = defaultdict(list)
+    for det in detections:
+        by_class[int(det[5])].append(det)
+    kept = []
+    for class_dets in by_class.values():
+        dets = sorted(class_dets, key=lambda d: d[4], reverse=True)
+        while dets:
+            best = dets.pop(0)
+            kept.append(best)
+            dets = [d for d in dets if _compute_iou_xyxy(best, d) <= iou_threshold]
+    return kept
+
+
 def _apply_crowd_postprocess(detections, crowd_mode, soft_nms_iou, soft_nms_sigma, score_threshold):
     if crowd_mode != "soft-nms":
         return detections
@@ -228,9 +247,12 @@ def process_video(
     tile_overlap=0.5,
     tile_imgsz=None,
     tile_confidence=None,
+    nms_iou=0.45,
+    nms_max_overlap=0.7,
     debug_detections=False,
     cyclist_class_id=0,
     pedestrian_class_id=1,
+    inference_only=False,
 ):
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
@@ -242,8 +264,15 @@ def process_video(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_delay = int(1000 / fps) if fps > 0 else 33
 
-    cyclist_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=2, embedder="mobilenet")
-    pedestrian_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=2, embedder="mobilenet")
+    cyclist_tracker = None
+    pedestrian_tracker = None
+    if not inference_only:
+        if DeepSort is None:
+            raise RuntimeError(
+                "deep_sort_realtime is not installed. Install it or run with --inference-only."
+            )
+        cyclist_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet")
+        pedestrian_tracker = DeepSort(max_age=max_age, max_iou_distance=max_iou_distance, n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet")
 
     cyclist_ids_seen = set()
     pedestrian_ids_seen = set()
@@ -318,49 +347,88 @@ def process_video(
                     if clipped is not None:
                         merged_dets.append(clipped)
 
+                # Hard NMS always applied first to eliminate cross-pass/tile duplicate boxes
+                merged_dets = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou)
+
                 processed_dets = _apply_crowd_postprocess(
                     merged_dets,
                     crowd_mode=crowd_mode,
                     soft_nms_iou=soft_nms_iou,
                     soft_nms_sigma=soft_nms_sigma,
-                    score_threshold=confidence_threshold * 0.25,
-                )
-
-                cyclist_detections, pedestrian_detections = _detections_to_tracker_inputs(
-                    processed_dets,
-                    cyclist_class_id=cyclist_class_id,
-                    pedestrian_class_id=pedestrian_class_id,
-                )
-                cyclist_tracks = cyclist_tracker.update_tracks(cyclist_detections, frame=frame) if cyclist_detections else []
-                pedestrian_tracks = (
-                    pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame) if pedestrian_detections else []
+                    score_threshold=confidence_threshold * 0.5,
                 )
 
                 annotated_frame = frame.copy()
                 cyclist_count = 0
                 pedestrian_count = 0
 
-                for track in [t for t in cyclist_tracks if t.is_confirmed()]:
-                    track_id = track.track_id
-                    x1, y1, x2, y2 = map(int, track.to_tlbr())
-                    cyclist_ids_seen.add(track_id)
-                    cyclist_count += 1
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    label = f"Cyclist #{track_id}"
-                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                    cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (0, 255, 0), -1)
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                if inference_only:
+                    for x1, y1, x2, y2, conf, cls_int in processed_dets:
+                        x1_i, y1_i, x2_i, y2_i = int(x1), int(y1), int(x2), int(y2)
+                        if cls_int == cyclist_class_id:
+                            cyclist_count += 1
+                            color = (0, 255, 0)
+                            label = f"Cyclist {conf:.2f}"
+                            text_color = (0, 0, 0)
+                        elif cls_int == pedestrian_class_id:
+                            pedestrian_count += 1
+                            color = (255, 0, 0)
+                            label = f"Pedestrian {conf:.2f}"
+                            text_color = (255, 255, 255)
+                        else:
+                            continue
+                        cv2.rectangle(annotated_frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(
+                            annotated_frame,
+                            (x1_i, y1_i - label_size[1] - 10),
+                            (x1_i + label_size[0], y1_i),
+                            color,
+                            -1,
+                        )
+                        cv2.putText(
+                            annotated_frame,
+                            label,
+                            (x1_i, y1_i - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            text_color,
+                            2,
+                        )
+                else:
+                    cyclist_detections, pedestrian_detections = _detections_to_tracker_inputs(
+                        processed_dets,
+                        cyclist_class_id=cyclist_class_id,
+                        pedestrian_class_id=pedestrian_class_id,
+                    )
+                    cyclist_tracks = (
+                        cyclist_tracker.update_tracks(cyclist_detections, frame=frame) if cyclist_detections else []
+                    )
+                    pedestrian_tracks = (
+                        pedestrian_tracker.update_tracks(pedestrian_detections, frame=frame) if pedestrian_detections else []
+                    )
 
-                for track in [t for t in pedestrian_tracks if t.is_confirmed()]:
-                    track_id = track.track_id
-                    x1, y1, x2, y2 = map(int, track.to_tlbr())
-                    pedestrian_ids_seen.add(track_id)
-                    pedestrian_count += 1
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                    label = f"Pedestrian #{track_id}"
-                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                    cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (255, 0, 0), -1)
-                    cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    for track in [t for t in cyclist_tracks if t.is_confirmed()]:
+                        track_id = track.track_id
+                        x1, y1, x2, y2 = map(int, track.to_tlbr())
+                        cyclist_ids_seen.add(track_id)
+                        cyclist_count += 1
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        label = f"Cyclist #{track_id}"
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (0, 255, 0), -1)
+                        cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+                    for track in [t for t in pedestrian_tracks if t.is_confirmed()]:
+                        track_id = track.track_id
+                        x1, y1, x2, y2 = map(int, track.to_tlbr())
+                        pedestrian_ids_seen.add(track_id)
+                        pedestrian_count += 1
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                        label = f"Pedestrian #{track_id}"
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), (x1 + label_size[0], y1), (255, 0, 0), -1)
+                        cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                 if frame_count % 10 == 0:
                     msg = (
@@ -374,8 +442,12 @@ def process_video(
                         )
                     print(msg)
 
-                cyclist_text = f"Cyclists: {cyclist_count} (Total: {len(cyclist_ids_seen)})"
-                pedestrian_text = f"Pedestrians: {pedestrian_count} (Total: {len(pedestrian_ids_seen)})"
+                if inference_only:
+                    cyclist_text = f"Cyclists: {cyclist_count}"
+                    pedestrian_text = f"Pedestrians: {pedestrian_count}"
+                else:
+                    cyclist_text = f"Cyclists: {cyclist_count} (Total: {len(cyclist_ids_seen)})"
+                    pedestrian_text = f"Pedestrians: {pedestrian_count} (Total: {len(pedestrian_ids_seen)})"
                 cv2.rectangle(annotated_frame, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
                 cv2.putText(
                     annotated_frame, cyclist_text, (text_x, text_y_cyclist),
@@ -423,37 +495,47 @@ def process_video(
             except (cv2.error, Exception):
                 pass
         print(f"\nVideo processing completed: {output_video_path}")
-        print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
-        print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
+        if inference_only:
+            print("Inference-only mode complete (tracking disabled).")
+        else:
+            print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
+            print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Video tracking with RF-DETR + DeepSORT (cyclist/pedestrian).")
-    parser.add_argument("--input", "-i", default="short_test_2.mp4", help="Input video path")
+    parser.add_argument("--input", "-i", default="../trim_3.mp4", help="Input video path")
     parser.add_argument("--output", "-o", default="", help="Output video path")
-    parser.add_argument("--model", "-m", default="", help="Fine-tuned RF-DETR checkpoint path. Empty uses base model.")
-    parser.add_argument("--model-size", choices=list(MODEL_MAP.keys()), default="RFDETRMedium")
+    parser.add_argument("--model", "-m", default="RF_DETR/runs/rfdetr_finetune_res576_mos1.0_mix0.2_persp0.0008/checkpoint_best_total.pth", help="Fine-tuned RF-DETR checkpoint path. Empty uses base model.")
+    parser.add_argument("--model-size", choices=list(MODEL_MAP.keys()), default="RFDETRSmall")
     parser.add_argument("--base-coco", action="store_true", help="Use COCO class mapping (bicycle/person) instead of custom ids.")
     parser.add_argument("--cyclist-class-id", type=int, default=0, help="Cyclist class id for fine-tuned model.")
     parser.add_argument("--pedestrian-class-id", type=int, default=1, help="Pedestrian class id for fine-tuned model.")
     parser.add_argument("--confidence", "-c", type=float, default=0.65)
-    parser.add_argument("--max-age", type=int, default=30)
-    parser.add_argument("--max-iou-distance", type=float, default=0.7)
+    parser.add_argument("--max-age", type=int, default=15)
+    parser.add_argument("--max-iou-distance", type=float, default=0.6)
     parser.add_argument("--no-display", action="store_true", default=True)
     parser.add_argument("--imgsz", type=int, default=0, help="Inference resolution override. 0 uses model default.")
-    parser.add_argument("--crowd-mode", choices=["off", "soft-nms"], default="off")
-    parser.add_argument("--soft-nms-iou", type=float, default=0.4)
-    parser.add_argument("--soft-nms-sigma", type=float, default=0.3)
+    parser.add_argument("--nms-iou", type=float, default=0.45, help="Hard NMS IoU threshold applied to all merged detections before tracking.")
+    parser.add_argument("--nms-max-overlap", type=float, default=0.7, help="DeepSort internal NMS overlap threshold. Removes duplicate detections inside the tracker.")
+    parser.add_argument("--crowd-mode", choices=["off", "soft-nms"], default="soft-nms")
+    parser.add_argument("--soft-nms-iou", type=float, default=0.25)
+    parser.add_argument("--soft-nms-sigma", type=float, default=0.2)
     parser.add_argument("--top-region-pass", action="store_true", default=True)
-    parser.add_argument("--top-region-ratio", type=float, default=0.35)
+    parser.add_argument("--top-region-ratio", type=float, default=0.45)
     parser.add_argument("--top-region-imgsz", type=int, default=0)
     parser.add_argument("--top-region-confidence", type=float, default=-1.0)
-    parser.add_argument("--tile-mode", choices=["off", "sahi"], default="off")
+    parser.add_argument("--tile-mode", choices=["off", "sahi"], default="sahi")
     parser.add_argument("--tile-size", type=int, default=480)
-    parser.add_argument("--tile-overlap", type=float, default=0.5)
+    parser.add_argument("--tile-overlap", type=float, default=0.6)
     parser.add_argument("--tile-imgsz", type=int, default=0)
     parser.add_argument("--tile-confidence", type=float, default=-1.0)
     parser.add_argument("--debug-detections", action="store_true")
+    parser.add_argument(
+        "--inference-only",
+        action="store_true",
+        help="Run detector-only mode (no DeepSORT tracking).",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -467,7 +549,11 @@ def main():
 
     if not args.output:
         base_name = os.path.splitext(args.input)[0]
-        args.output = f"{base_name}_rfdetr_deepsort.mp4"
+        args.output = (
+            f"{base_name}_rfdetr_inference.mp4"
+            if args.inference_only
+            else f"{base_name}_rfdetr_deepsort.mp4"
+        )
 
     model, class_names = load_model(args.model_size, args.model.strip() or None)
 
@@ -492,6 +578,8 @@ def main():
         max_iou_distance=args.max_iou_distance,
         disable_display=args.no_display,
         imgsz=(args.imgsz if args.imgsz > 0 else None),
+        nms_iou=args.nms_iou,
+        nms_max_overlap=args.nms_max_overlap,
         crowd_mode=args.crowd_mode,
         soft_nms_iou=args.soft_nms_iou,
         soft_nms_sigma=args.soft_nms_sigma,
@@ -507,6 +595,7 @@ def main():
         debug_detections=args.debug_detections,
         cyclist_class_id=cyclist_class_id,
         pedestrian_class_id=pedestrian_class_id,
+        inference_only=args.inference_only,
     )
 
 
