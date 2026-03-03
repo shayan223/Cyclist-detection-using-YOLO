@@ -233,6 +233,8 @@ def process_video(
     tile_confidence=None,
     nms_iou=0.45,
     nms_max_overlap=0.7,
+    downscale_width=640,
+    downscale_height=480,
     debug_detections=False,
     inference_only=False,
 ):
@@ -331,11 +333,21 @@ def process_video(
                     break
 
                 frame_h, frame_w = frame.shape[:2]
+
+                # Optional frame downscale for faster inference
+                if downscale_width > 0 and downscale_height > 0 and (frame_w > downscale_width or frame_h > downscale_height):
+                    proc_frame = cv2.resize(frame, (downscale_width, downscale_height))
+                    scale_x = frame_w / downscale_width
+                    scale_y = frame_h / downscale_height
+                else:
+                    proc_frame = frame
+                    scale_x = scale_y = 1.0
+                proc_h, proc_w = proc_frame.shape[:2]
                 class_filter = {0, 1}
 
                 # Pass 1: full-frame detection
                 full_dets = _extract_boxes(
-                    _run_detector(model, frame, confidence_threshold, iou_threshold, imgsz=imgsz),
+                    _run_detector(model, proc_frame, confidence_threshold, iou_threshold, imgsz=imgsz),
                     class_filter=class_filter,
                 )
 
@@ -344,7 +356,7 @@ def process_video(
                 if top_region_pass:
                     top_conf = confidence_threshold if top_region_confidence is None else top_region_confidence
                     top_dets = _run_top_region_pass(
-                        frame, model, iou_threshold, top_region_ratio, top_conf, top_region_imgsz, class_filter
+                        proc_frame, model, iou_threshold, top_region_ratio, top_conf, top_region_imgsz, class_filter
                     )
 
                 # Pass 3: optional SAHI-style tiled pass
@@ -352,15 +364,22 @@ def process_video(
                 if tile_mode == "sahi":
                     tile_conf = confidence_threshold if tile_confidence is None else tile_confidence
                     tile_dets = _run_tiled_pass(
-                        frame, model, iou_threshold, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
+                        proc_frame, model, iou_threshold, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
                     )
 
-                # Merge and clip
+                # Merge and clip to proc_frame bounds
                 merged_dets = []
                 for det in full_dets + top_dets + tile_dets:
-                    clipped = _clip_detection(det, frame_w=frame_w, frame_h=frame_h)
+                    clipped = _clip_detection(det, frame_w=proc_w, frame_h=proc_h)
                     if clipped is not None:
                         merged_dets.append(clipped)
+
+                # Scale detections back to original frame coordinates
+                if scale_x != 1.0 or scale_y != 1.0:
+                    merged_dets = [
+                        [d[0] * scale_x, d[1] * scale_y, d[2] * scale_x, d[3] * scale_y, d[4], d[5]]
+                        for d in merged_dets
+                    ]
 
                 # Hard NMS (always on): eliminates cross-pass/tile duplicate boxes
                 merged_dets = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou)
@@ -528,6 +547,8 @@ def main():
     parser.add_argument("--tile-overlap", type=float, default=0.6, help="Tile overlap fraction (0.0-0.8).")
     parser.add_argument("--tile-imgsz", type=int, default=0, help="Tile inference resolution. 0 = model default.")
     parser.add_argument("--tile-confidence", type=float, default=-1.0, help="Tile confidence. Negative = use --confidence.")
+    parser.add_argument("--downscale-width", type=int, default=640, help="Resize frame width before inference. 0 to disable.")
+    parser.add_argument("--downscale-height", type=int, default=480, help="Resize frame height before inference. 0 to disable.")
     parser.add_argument("--debug-detections", action="store_true", help="Print per-pass detection counts every 10 frames.")
     parser.add_argument("--inference-only", action="store_true", help="Detector-only mode (no DeepSORT tracking).")
     args = parser.parse_args()
@@ -575,6 +596,8 @@ def main():
         tile_confidence=(args.tile_confidence if args.tile_confidence >= 0 else None),
         nms_iou=args.nms_iou,
         nms_max_overlap=args.nms_max_overlap,
+        downscale_width=args.downscale_width,
+        downscale_height=args.downscale_height,
         debug_detections=args.debug_detections,
         inference_only=args.inference_only,
     )

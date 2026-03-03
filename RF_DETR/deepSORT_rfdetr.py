@@ -249,6 +249,8 @@ def process_video(
     tile_confidence=None,
     nms_iou=0.45,
     nms_max_overlap=0.7,
+    downscale_width=640,
+    downscale_height=480,
     debug_detections=False,
     cyclist_class_id=0,
     pedestrian_class_id=1,
@@ -320,10 +322,20 @@ def process_video(
                     break
 
                 frame_h, frame_w = frame.shape[:2]
+
+                # Optional frame downscale for faster inference
+                if downscale_width > 0 and downscale_height > 0 and (frame_w > downscale_width or frame_h > downscale_height):
+                    proc_frame = cv2.resize(frame, (downscale_width, downscale_height))
+                    scale_x = frame_w / downscale_width
+                    scale_y = frame_h / downscale_height
+                else:
+                    proc_frame = frame
+                    scale_x = scale_y = 1.0
+                proc_h, proc_w = proc_frame.shape[:2]
                 class_filter = {cyclist_class_id, pedestrian_class_id}
 
                 full_dets = _extract_boxes(
-                    _run_detector(model, frame, confidence_threshold, imgsz=imgsz),
+                    _run_detector(model, proc_frame, confidence_threshold, imgsz=imgsz),
                     class_filter=class_filter,
                 )
 
@@ -331,21 +343,29 @@ def process_video(
                 if top_region_pass:
                     top_conf = confidence_threshold if top_region_confidence is None else top_region_confidence
                     top_dets = _run_top_region_pass(
-                        frame, model, top_region_ratio, top_conf, top_region_imgsz, class_filter
+                        proc_frame, model, top_region_ratio, top_conf, top_region_imgsz, class_filter
                     )
 
                 tile_dets = []
                 if tile_mode == "sahi":
                     tile_conf = confidence_threshold if tile_confidence is None else tile_confidence
                     tile_dets = _run_tiled_pass(
-                        frame, model, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
+                        proc_frame, model, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
                     )
 
+                # Merge and clip to proc_frame bounds
                 merged_dets = []
                 for det in full_dets + top_dets + tile_dets:
-                    clipped = _clip_detection(det, frame_w=frame_w, frame_h=frame_h)
+                    clipped = _clip_detection(det, frame_w=proc_w, frame_h=proc_h)
                     if clipped is not None:
                         merged_dets.append(clipped)
+
+                # Scale detections back to original frame coordinates
+                if scale_x != 1.0 or scale_y != 1.0:
+                    merged_dets = [
+                        [d[0] * scale_x, d[1] * scale_y, d[2] * scale_x, d[3] * scale_y, d[4], d[5]]
+                        for d in merged_dets
+                    ]
 
                 # Hard NMS always applied first to eliminate cross-pass/tile duplicate boxes
                 merged_dets = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou)
@@ -530,6 +550,8 @@ def main():
     parser.add_argument("--tile-overlap", type=float, default=0.6)
     parser.add_argument("--tile-imgsz", type=int, default=0)
     parser.add_argument("--tile-confidence", type=float, default=-1.0)
+    parser.add_argument("--downscale-width", type=int, default=640, help="Resize frame width before inference. 0 to disable.")
+    parser.add_argument("--downscale-height", type=int, default=480, help="Resize frame height before inference. 0 to disable.")
     parser.add_argument("--debug-detections", action="store_true")
     parser.add_argument(
         "--inference-only",
@@ -592,6 +614,8 @@ def main():
         tile_overlap=args.tile_overlap,
         tile_imgsz=(args.tile_imgsz if args.tile_imgsz > 0 else None),
         tile_confidence=(args.tile_confidence if args.tile_confidence >= 0 else None),
+        downscale_width=args.downscale_width,
+        downscale_height=args.downscale_height,
         debug_detections=args.debug_detections,
         cyclist_class_id=cyclist_class_id,
         pedestrian_class_id=pedestrian_class_id,
