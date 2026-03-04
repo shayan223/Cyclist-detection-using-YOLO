@@ -30,3 +30,5 @@ eurocity_yolo/
 /RF_DETR/__pycache__
 /RF_DETR/__pycache__
 /PET_Analysis
+/RT_DETR/runs
+*.pyc
