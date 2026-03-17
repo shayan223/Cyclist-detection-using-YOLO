@@ -390,6 +390,105 @@ def _split_detections_by_class(detections, class_ids, min_confidences=None):
 
 
 # ---------------------------------------------------------------------------
+# Deadzone helpers
+# ---------------------------------------------------------------------------
+
+def _is_in_deadzone(det, deadzones):
+    """Return True if the detection's centre point falls inside any deadzone polygon."""
+    if not deadzones:
+        return False
+    cx = (det[0] + det[2]) / 2.0
+    cy = (det[1] + det[3]) / 2.0
+    for zone in deadzones:
+        pts = np.array(zone, dtype=np.float32)
+        if cv2.pointPolygonTest(pts, (float(cx), float(cy)), False) >= 0:
+            return True
+    return False
+
+
+def _draw_deadzones_interactive(frame, window_name="Draw Deadzones"):
+    """
+    Interactive deadzone editor shown on the first video frame.
+
+    Controls
+    --------
+    Left-click + drag : draw a rectangular deadzone
+    U                 : undo last zone
+    C                 : clear all zones
+    Enter / Space     : confirm and continue
+    Esc               : skip (return empty list — no deadzones)
+    """
+    zones    = []
+    drawing  = False
+    start_pt = None
+    curr_pt  = None
+
+    def _mouse(event, x, y, flags, param):
+        nonlocal drawing, start_pt, curr_pt
+        if event == cv2.EVENT_LBUTTONDOWN:
+            drawing  = True
+            start_pt = (x, y)
+            curr_pt  = (x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and drawing:
+            curr_pt = (x, y)
+        elif event == cv2.EVENT_LBUTTONUP and drawing:
+            drawing = False
+            if start_pt and (abs(x - start_pt[0]) > 5 or abs(y - start_pt[1]) > 5):
+                x1, y1 = min(start_pt[0], x), min(start_pt[1], y)
+                x2, y2 = max(start_pt[0], x), max(start_pt[1], y)
+                zones.append([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+            start_pt = curr_pt = None
+
+    instructions = [
+        "Draw deadzones: left-click + drag to add a zone",
+        "U: undo last   C: clear all   Enter/Space: confirm   Esc: skip",
+    ]
+
+    try:
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _mouse)
+
+        while True:
+            img = frame.copy()
+            # Overlay existing zones (semi-transparent dark red)
+            for zone in zones:
+                pts  = np.array(zone, dtype=np.int32)
+                _ov  = img.copy()
+                cv2.fillPoly(_ov, [pts], (0, 0, 180))
+                cv2.addWeighted(_ov, 0.35, img, 0.65, 0, img)
+                cv2.polylines(img, [pts], True, (0, 0, 220), 2)
+            # Rubber-band rectangle while drawing
+            if drawing and start_pt and curr_pt:
+                cv2.rectangle(img, start_pt, curr_pt, (0, 220, 220), 2)
+            # Instructions (black outline then white fill for readability on any background)
+            for i, txt in enumerate(instructions):
+                y_pos = 22 + i * 24
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow(window_name, img)
+
+            key = cv2.waitKey(20) & 0xFF
+            if key in (13, 32):        # Enter or Space → confirm
+                break
+            elif key == 27:            # Esc → skip (no deadzones)
+                zones = []
+                break
+            elif key == ord('u') and zones:
+                zones.pop()
+            elif key == ord('c'):
+                zones = []
+
+        cv2.destroyWindow(window_name)
+    except (cv2.error, Exception) as e:
+        print(f"Deadzone drawing unavailable: {e}")
+        zones = []
+
+    return zones
+
+
+# ---------------------------------------------------------------------------
 # Main video processing
 # ---------------------------------------------------------------------------
 
@@ -401,7 +500,9 @@ def process_video(
     device='cpu',
     disable_display=True,
     inference_only=False,
+    deadzones=None,
 ):
+    deadzones = deadzones or []
     # --- Unpack config sections ---
     inf_cfg   = cfg.get('inference', {})
     pass_cfg  = cfg.get('passes', {})
@@ -630,7 +731,20 @@ def process_video(
                     score_threshold=confidence_threshold * 0.5,
                 )
 
+                # Deadzone filter: suppress any detection whose centre falls inside
+                # a user-defined exclusion zone (applied in original frame coordinates).
+                if deadzones:
+                    processed_dets = [d for d in processed_dets
+                                      if not _is_in_deadzone(d, deadzones)]
+
                 annotated_frame = frame.copy()
+                # Draw deadzone overlays so exclusion regions are visible in the output video
+                for _dz in deadzones:
+                    _pts = np.array(_dz, dtype=np.int32)
+                    _ov  = annotated_frame.copy()
+                    cv2.fillPoly(_ov, [_pts], (0, 0, 180))
+                    cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
+                    cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
                 current_counts  = {cid: 0 for cid in class_ids}
 
                 if inference_only:
@@ -783,6 +897,10 @@ def main():
     parser.add_argument("--model",  "-m", default=None, help="Override model path from config.")
     parser.add_argument("--no-display",     action="store_true", default=True, help="Disable live preview window.")
     parser.add_argument("--inference-only", action="store_true", help="Detector-only mode (no DeepSORT).")
+    parser.add_argument("--deadzone", action="store_true",
+                        help="Interactively draw rectangular deadzones on the first frame before "
+                             "processing. Detections whose centre falls inside a deadzone are "
+                             "suppressed. Left-click + drag to draw; U undo; C clear; Enter confirm.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -812,6 +930,18 @@ def main():
     use_compile = cfg.get('inference', {}).get('compile', False)
     model = load_model(model_path, DEVICE, use_compile=use_compile)
 
+    deadzones = []
+    if args.deadzone:
+        _cap = cv2.VideoCapture(cfg['input'])
+        _ret, _first = _cap.read()
+        _cap.release()
+        if _ret and _first is not None:
+            print("Deadzone setup: left-click + drag to draw exclusion rectangles on the first frame.")
+            deadzones = _draw_deadzones_interactive(_first)
+            print(f"{len(deadzones)} deadzone(s) configured.")
+        else:
+            print("WARNING: Could not read first frame for deadzone setup.")
+
     process_video(
         input_video_path=cfg['input'],
         output_video_path=cfg['output'],
@@ -820,6 +950,7 @@ def main():
         device=DEVICE,
         disable_display=args.no_display,
         inference_only=args.inference_only or cfg.get('debug', {}).get('inference_only', False),
+        deadzones=deadzones,
     )
 
 
