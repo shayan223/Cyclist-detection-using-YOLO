@@ -16,7 +16,7 @@ except ImportError:
     DeepSort = None
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-DEFAULT_MODEL_PATH = 'cyclist_detection_yolo26/weights/best.pt'
+DEFAULT_MODEL_PATH = './yolo26l_100epoch_v5.pt'
 
 
 # ---------------------------------------------------------------------------

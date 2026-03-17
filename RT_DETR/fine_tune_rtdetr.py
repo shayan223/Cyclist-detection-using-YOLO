@@ -5,10 +5,10 @@ import torch
 
 # --- Configuration ---
 CONFIG_FILE_PATH = '../v5_pdx_cyclist_dataset/data.yaml'
-MODEL_PATH = 'rtdetr-l.pt'  # Base RT-DETR model. Options: rtdetr-l.pt, rtdetr-x.pt
-EPOCHS = 50
+MODEL_PATH = 'rt_detr_macro_augmented.pt'  # Base RT-DETR model. Options: rtdetr-l.pt, rtdetr-x.pt
+EPOCHS = 100
 BATCH = 8
-LR0 = 0.0001
+LR0 = 0.001
 IMGSZ = 640
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 PROJECT_NAME = "cyclist_detection_rtdetr"

@@ -22,13 +22,8 @@ import torch
 from mmengine.config import Config
 from mmengine.runner import Runner
 
-try:
-    from mmdet.utils import register_all_modules
-    register_all_modules()
-except ImportError as exc:
-    raise ImportError(
-        "mmdet is not installed. Install with: pip install mmdet"
-    ) from exc
+from mmdet.utils import register_all_modules
+register_all_modules()
 
 # ---------------------------------------------------------------------------
 # Defaults

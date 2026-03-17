@@ -4,8 +4,8 @@ from ultralytics import YOLO
 import torch
 
 # --- Configuration ---
-CONFIG_FILE_PATH = 'v5_pdx_cyclist_dataset/data.yaml'
-MODEL_PATH = './yolo26l_macro.pt'
+CONFIG_FILE_PATH = '../v5_pdx_cyclist_dataset/data.yaml'
+MODEL_PATH = '../yolo26l_macro.pt'
 EPOCHS = 100
 BATCH = 4
 IMGSZ = 960

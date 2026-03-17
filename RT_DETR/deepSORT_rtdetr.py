@@ -16,7 +16,7 @@ except ImportError:
     DeepSort = None
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-DEFAULT_MODEL_PATH = './runs/detect/cyclist_detection_rtdetr/rtdetr_finetune_imgsz640_mos1.0_mix0.15_fliplr0.52/weights/best.pt'
+DEFAULT_MODEL_PATH = './pdx_finetuned_rtdetr.pt'
 
 
 # ---------------------------------------------------------------------------
@@ -38,11 +38,13 @@ def load_model(model_path, device):
 # Detection helpers
 # ---------------------------------------------------------------------------
 
-def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None):
+def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None, half=False):
     """Run one Ultralytics RT-DETR detector pass and return raw results."""
     kwargs = {"conf": conf_threshold, "iou": iou_threshold, "agnostic_nms": False, "verbose": False}
     if imgsz is not None:
         kwargs["imgsz"] = imgsz
+    if half:
+        kwargs["half"] = True
     return model(image, **kwargs)
 
 
@@ -155,22 +157,21 @@ def _apply_crowd_postprocess(detections, crowd_mode, soft_nms_iou, soft_nms_sigm
 # Multi-pass detection helpers
 # ---------------------------------------------------------------------------
 
-def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_threshold, imgsz, class_filter):
+def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_threshold, imgsz, class_filter, half=False):
     """Run detection on the upper region of the frame (where distant objects appear)."""
     h, _ = frame.shape[:2]
     top_h = int(max(1, min(h, round(h * top_region_ratio))))
     roi = frame[:top_h, :]
-    results = _run_detector(model, roi, conf_threshold, iou_threshold, imgsz=imgsz)
+    results = _run_detector(model, roi, conf_threshold, iou_threshold, imgsz=imgsz, half=half)
     return _extract_boxes(results, x_offset=0, y_offset=0, class_filter=class_filter)
 
 
-def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap, imgsz, class_filter):
-    """SAHI-style tiled inference pass; maps all tiles back to full-frame coordinates."""
+def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap, imgsz, class_filter, half=False):
+    """SAHI-style tiled inference pass; batches all tiles into a single model call."""
     h, w = frame.shape[:2]
     tile = max(64, int(tile_size))
     overlap = max(0.0, min(0.8, float(tile_overlap)))
     stride = max(32, int(round(tile * (1.0 - overlap))))
-    detections = []
 
     y_starts = list(range(0, max(1, h - tile + 1), stride))
     x_starts = list(range(0, max(1, w - tile + 1), stride))
@@ -179,6 +180,7 @@ def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile
     if not x_starts or x_starts[-1] != max(0, w - tile):
         x_starts.append(max(0, w - tile))
 
+    tiles, offsets = [], []
     for y0 in y_starts:
         for x0 in x_starts:
             y1 = min(h, y0 + tile)
@@ -186,8 +188,23 @@ def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile
             tile_img = frame[y0:y1, x0:x1]
             if tile_img.size == 0:
                 continue
-            results = _run_detector(model, tile_img, conf_threshold, iou_threshold, imgsz=imgsz)
-            detections.extend(_extract_boxes(results, x_offset=x0, y_offset=y0, class_filter=class_filter))
+            tiles.append(tile_img)
+            offsets.append((x0, y0))
+
+    if not tiles:
+        return []
+
+    # Single batched model call instead of one call per tile
+    kwargs = {"conf": conf_threshold, "iou": iou_threshold, "agnostic_nms": False, "verbose": False}
+    if imgsz is not None:
+        kwargs["imgsz"] = imgsz
+    if half:
+        kwargs["half"] = True
+    all_results = model(tiles, **kwargs)
+
+    detections = []
+    for result, (x_offset, y_offset) in zip(all_results, offsets):
+        detections.extend(_extract_boxes([result], x_offset=x_offset, y_offset=y_offset, class_filter=class_filter))
     return detections
 
 
@@ -231,12 +248,14 @@ def process_video(
     tile_overlap=0.6,
     tile_imgsz=None,
     tile_confidence=None,
+    tile_interval=1,
     nms_iou=0.45,
     nms_max_overlap=0.7,
     downscale_width=640,
     downscale_height=480,
     debug_detections=False,
     inference_only=False,
+    half=False,
 ):
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
@@ -259,11 +278,11 @@ def process_video(
             )
         cyclist_tracker = DeepSort(
             max_age=max_age, max_iou_distance=max_iou_distance,
-            n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
+            n_init=5, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
         )
         pedestrian_tracker = DeepSort(
             max_age=max_age, max_iou_distance=max_iou_distance,
-            n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
+            n_init=5, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
         )
 
     cyclist_ids_seen = set()
@@ -318,6 +337,7 @@ def process_video(
     bg_y2 = min(height, text_y_pedestrian + padding)
 
     frame_count = 0
+    _cached_tile_dets = []
     paused = False
     speed_multiplier = 1.0
     annotated_frame = None
@@ -347,7 +367,7 @@ def process_video(
 
                 # Pass 1: full-frame detection
                 full_dets = _extract_boxes(
-                    _run_detector(model, proc_frame, confidence_threshold, iou_threshold, imgsz=imgsz),
+                    _run_detector(model, proc_frame, confidence_threshold, iou_threshold, imgsz=imgsz, half=half),
                     class_filter=class_filter,
                 )
 
@@ -356,16 +376,21 @@ def process_video(
                 if top_region_pass:
                     top_conf = confidence_threshold if top_region_confidence is None else top_region_confidence
                     top_dets = _run_top_region_pass(
-                        proc_frame, model, iou_threshold, top_region_ratio, top_conf, top_region_imgsz, class_filter
+                        proc_frame, model, iou_threshold, top_region_ratio, top_conf, top_region_imgsz, class_filter, half=half
                     )
 
-                # Pass 3: optional SAHI-style tiled pass
-                tile_dets = []
-                if tile_mode == "sahi":
+                # Pass 3: optional SAHI-style tiled pass (batched; runs every tile_interval frames)
+                run_tiles = tile_mode == "sahi" and (frame_count % max(1, tile_interval) == 0)
+                if run_tiles:
                     tile_conf = confidence_threshold if tile_confidence is None else tile_confidence
                     tile_dets = _run_tiled_pass(
-                        proc_frame, model, iou_threshold, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
+                        proc_frame, model, iou_threshold, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter, half=half
                     )
+                    _cached_tile_dets = tile_dets
+                elif tile_mode == "sahi":
+                    tile_dets = _cached_tile_dets
+                else:
+                    tile_dets = []
 
                 # Merge and clip to proc_frame bounds
                 merged_dets = []
@@ -524,17 +549,17 @@ def process_video(
 
 def main():
     parser = argparse.ArgumentParser(description="RT-DETR + DeepSORT cyclist/pedestrian tracking.")
-    parser.add_argument("--input", "-i", default="../trim6.mp4", help="Input video path.")
+    parser.add_argument("--input", "-i", default="../trim4.mp4", help="Input video path.")
     parser.add_argument("--output", "-o", default="", help="Output video path.")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL_PATH, help="RT-DETR .pt checkpoint path.")
-    parser.add_argument("--confidence", "-c", type=float, default=0.65, help="Detection confidence threshold.")
-    parser.add_argument("--iou", type=float, default=0.7, help="Ultralytics NMS IoU threshold.")
-    parser.add_argument("--max-age", type=int, default=15, help="DeepSort max frames to keep an unmatched track.")
-    parser.add_argument("--max-iou-distance", type=float, default=0.6, help="DeepSort max IoU distance for track matching.")
+    parser.add_argument("--confidence", "-c", type=float, default=0.7, help="Detection confidence threshold.")
+    parser.add_argument("--iou", type=float, default=0.9, help="Ultralytics NMS IoU threshold.")
+    parser.add_argument("--max-age", type=int, default=5, help="DeepSort max frames to keep an unmatched track.")
+    parser.add_argument("--max-iou-distance", type=float, default=0.35, help="DeepSort max IoU distance for track matching.")
     parser.add_argument("--no-display", action="store_true", default=True, help="Disable live preview window.")
     parser.add_argument("--imgsz", type=int, default=0, help="Inference resolution override. 0 = model default.")
-    parser.add_argument("--nms-iou", type=float, default=0.45, help="Hard NMS IoU threshold (pre-tracker duplicate removal).")
-    parser.add_argument("--nms-max-overlap", type=float, default=0.7, help="DeepSort internal NMS overlap threshold.")
+    parser.add_argument("--nms-iou", type=float, default=0.3, help="Hard NMS IoU threshold (pre-tracker duplicate removal).")
+    parser.add_argument("--nms-max-overlap", type=float, default=0.45, help="DeepSort internal NMS overlap threshold.")
     parser.add_argument("--crowd-mode", choices=["off", "soft-nms"], default="soft-nms", help="Crowd suppression mode.")
     parser.add_argument("--soft-nms-iou", type=float, default=0.25, help="Soft-NMS IoU trigger threshold.")
     parser.add_argument("--soft-nms-sigma", type=float, default=0.2, help="Soft-NMS Gaussian penalty sigma.")
@@ -543,13 +568,15 @@ def main():
     parser.add_argument("--top-region-imgsz", type=int, default=0, help="Top-region inference resolution. 0 = model default.")
     parser.add_argument("--top-region-confidence", type=float, default=-1.0, help="Top-region confidence. Negative = use --confidence.")
     parser.add_argument("--tile-mode", choices=["off", "sahi"], default="sahi", help="Tiled SAHI-style inference mode.")
-    parser.add_argument("--tile-size", type=int, default=480, help="Tile size in pixels.")
-    parser.add_argument("--tile-overlap", type=float, default=0.6, help="Tile overlap fraction (0.0-0.8).")
+    parser.add_argument("--tile-size", type=int, default=240, help="Tile size in pixels.")
+    parser.add_argument("--tile-overlap", type=float, default=0.4, help="Tile overlap fraction (0.0-0.8).")
     parser.add_argument("--tile-imgsz", type=int, default=0, help="Tile inference resolution. 0 = model default.")
-    parser.add_argument("--tile-confidence", type=float, default=-1.0, help="Tile confidence. Negative = use --confidence.")
+    parser.add_argument("--tile-confidence", type=float, default=.75, help="Tile confidence. Negative = use --confidence.")
+    parser.add_argument("--tile-interval", type=int, default=1, help="Run SAHI tiled pass every N frames (1 = every frame, 3 = every 3rd).")
     parser.add_argument("--downscale-width", type=int, default=640, help="Resize frame width before inference. 0 to disable.")
     parser.add_argument("--downscale-height", type=int, default=480, help="Resize frame height before inference. 0 to disable.")
-    parser.add_argument("--debug-detections", action="store_true", help="Print per-pass detection counts every 10 frames.")
+    parser.add_argument("--half", action="store_true", default=True, help="Use FP16 half-precision inference (requires CUDA GPU).")
+    parser.add_argument("--debug-detections", action="store_true", default=True, help="Print per-pass detection counts every 10 frames.")
     parser.add_argument("--inference-only", action="store_true", help="Detector-only mode (no DeepSORT tracking).")
     args = parser.parse_args()
 
@@ -594,12 +621,14 @@ def main():
         tile_overlap=args.tile_overlap,
         tile_imgsz=(args.tile_imgsz if args.tile_imgsz > 0 else None),
         tile_confidence=(args.tile_confidence if args.tile_confidence >= 0 else None),
+        tile_interval=args.tile_interval,
         nms_iou=args.nms_iou,
         nms_max_overlap=args.nms_max_overlap,
         downscale_width=args.downscale_width,
         downscale_height=args.downscale_height,
         debug_detections=args.debug_detections,
         inference_only=args.inference_only,
+        half=args.half,
     )
 
 
