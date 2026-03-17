@@ -49,18 +49,12 @@ passes:
     confidence: null
 
   warp:
-    enabled: false   # enable after running: python warp_calibrate.py
-
-    # 4 points in the ORIGINAL (downscaled 960×540) frame that form a rectangle
-    # in real-world space — e.g. the four corners of the bike lane or road markings.
-    # Click them clockwise starting from top-left.
-    # NOTE: These points were calibrated for trim4/trim5. Re-run warp_calibrate.py
-    # if using a different camera angle or video source.
+    enabled: true
     src_points:
-      - [474, 65]
-      - [746, 90]
-      - [662, 290]
-      - [184, 157]
+      - [352, 71]
+      - [910, 131]
+      - [843, 465]
+      - [25, 160]
     dst_size: [960, 480]
     confidence: null
     imgsz: 0

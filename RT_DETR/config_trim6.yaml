@@ -64,10 +64,10 @@ passes:
   warp:
     enabled: true
     src_points:
-      - [474, 65]
-      - [746, 90]
-      - [662, 290]
-      - [184, 157]
+      - [352, 71]
+      - [910, 131]
+      - [843, 465]
+      - [25, 160]
     dst_size: [960, 480]
     confidence: null
     imgsz: 0
