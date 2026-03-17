@@ -239,26 +239,112 @@ def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_thr
     return _extract_boxes(results, x_offset=0, y_offset=0, class_filter=class_filter)
 
 
-def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap, imgsz, class_filter, half=False, device=None):
-    """SAHI-style tiled inference pass; batches all tiles into a single model call."""
+def _build_homography(src_points, dst_size):
+    """Compute H (src→dst) and H_inv (dst→src) from 4 calibration points.
+
+    src_points: [[x,y], ...] 4 points in original frame, clockwise from top-left,
+                that form a rectangle in real-world space (e.g. lane corners).
+    dst_size:   [width, height] of the rectified output image.
+    """
+    src = np.array(src_points, dtype=np.float32)
+    dw, dh = dst_size
+    dst = np.array([[0, 0], [dw - 1, 0], [dw - 1, dh - 1], [0, dh - 1]], dtype=np.float32)
+    H     = cv2.getPerspectiveTransform(src, dst)
+    H_inv = cv2.getPerspectiveTransform(dst, src)
+    return H, H_inv
+
+
+def _warp_boxes_to_original(boxes, H_inv):
+    """Map axis-aligned boxes from warped space back to original frame coordinates.
+
+    Because the warp is a projective transform, a rectangle in warped space maps
+    to a quadrilateral in original space.  We transform all 4 corners and take
+    the axis-aligned bounding box of the result.
+    """
+    if not boxes:
+        return []
+    mapped = []
+    for box in boxes:
+        x1, y1, x2, y2 = box[:4]
+        corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+        # Homogeneous transform
+        ch  = np.column_stack([corners, np.ones(4)])
+        t   = (H_inv @ ch.T).T
+        t   = t[:, :2] / t[:, 2:3]          # normalise
+        mapped.append([
+            float(t[:, 0].min()), float(t[:, 1].min()),
+            float(t[:, 0].max()), float(t[:, 1].max()),
+            box[4], box[5],
+        ])
+    return mapped
+
+
+def _run_warp_pass(frame, model, iou_threshold, conf_threshold, H, H_inv, dst_size,
+                   imgsz, class_filter, half=False, device=None):
+    """Perspective-corrected detection pass.
+
+    Applies the calibrated homography to straighten the camera's perspective
+    distortion, runs detection on the rectified image, then maps boxes back to
+    original frame coordinates via the inverse homography.  This makes distant
+    objects (which shrink toward the top of an overhead camera) appear at a more
+    consistent scale, improving recall without needing very small SAHI tiles.
+
+    Calibrate H/H_inv with warp_calibrate.py and store the points in config.yaml.
+    """
+    dw, dh = dst_size
+    warped      = cv2.warpPerspective(frame, H, (dw, dh))
+    results     = _run_detector(model, warped, conf_threshold, iou_threshold,
+                                imgsz=imgsz, half=half, device=device)
+    warped_boxes = _extract_boxes(results, class_filter=class_filter)
+    return _warp_boxes_to_original(warped_boxes, H_inv)
+
+
+def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap,
+                    imgsz, class_filter, half=False, device=None,
+                    y_max_fraction=1.0, prescale=1.0):
+    """SAHI-style tiled inference pass; batches all tiles into a single model call.
+
+    Args:
+        y_max_fraction: Restrict tiling to the top fraction of the frame (0.0–1.0).
+                        e.g. 0.5 tiles only the top half, saving ~50% compute and
+                        focusing where perspective makes objects small.
+        prescale:       Upscale the tiling region by this factor before slicing tiles.
+                        e.g. 2.0 doubles the apparent size of objects for the model,
+                        equivalent to a simple image-pyramid step. Detections are
+                        scaled back to original coordinates after inference.
+                        Costs proportionally more memory; use 1.5–2.0 for top region.
+    """
     h, w = frame.shape[:2]
+
+    # Optionally restrict to top portion of frame
+    y_limit = max(1, int(round(h * min(1.0, max(0.0, y_max_fraction)))))
+    region  = frame[:y_limit, :]
+
+    # Optionally prescale the region (image-pyramid step for small distant objects)
+    prescale = max(1.0, float(prescale))
+    if prescale != 1.0:
+        new_w = int(round(w * prescale))
+        new_h = int(round(y_limit * prescale))
+        region = cv2.resize(region, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    rh, rw = region.shape[:2]
+
     tile = max(64, int(tile_size))
     overlap = max(0.0, min(0.8, float(tile_overlap)))
     stride = max(32, int(round(tile * (1.0 - overlap))))
 
-    y_starts = list(range(0, max(1, h - tile + 1), stride))
-    x_starts = list(range(0, max(1, w - tile + 1), stride))
-    if not y_starts or y_starts[-1] != max(0, h - tile):
-        y_starts.append(max(0, h - tile))
-    if not x_starts or x_starts[-1] != max(0, w - tile):
-        x_starts.append(max(0, w - tile))
+    y_starts = list(range(0, max(1, rh - tile + 1), stride))
+    x_starts = list(range(0, max(1, rw - tile + 1), stride))
+    if not y_starts or y_starts[-1] != max(0, rh - tile):
+        y_starts.append(max(0, rh - tile))
+    if not x_starts or x_starts[-1] != max(0, rw - tile):
+        x_starts.append(max(0, rw - tile))
 
     tiles, offsets = [], []
     for y0 in y_starts:
         for x0 in x_starts:
-            y1 = min(h, y0 + tile)
-            x1 = min(w, x0 + tile)
-            tile_img = frame[y0:y1, x0:x1]
+            y1 = min(rh, y0 + tile)
+            x1 = min(rw, x0 + tile)
+            tile_img = region[y0:y1, x0:x1]
             if tile_img.size == 0:
                 continue
             tiles.append(tile_img)
@@ -277,9 +363,18 @@ def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile
         kwargs["device"] = device
     all_results = model(tiles, **kwargs)
 
+    # Scale offsets back to original frame coordinates if prescaling was applied
+    inv_scale = 1.0 / prescale
     detections = []
     for result, (x_offset, y_offset) in zip(all_results, offsets):
-        detections.extend(_extract_boxes([result], x_offset=x_offset, y_offset=y_offset, class_filter=class_filter))
+        boxes = _extract_boxes([result], x_offset=x_offset, y_offset=y_offset, class_filter=class_filter)
+        if prescale != 1.0:
+            boxes = [
+                [b[0] * inv_scale, b[1] * inv_scale,
+                 b[2] * inv_scale, b[3] * inv_scale, b[4], b[5]]
+                for b in boxes
+            ]
+        detections.extend(boxes)
     return detections
 
 
@@ -336,13 +431,32 @@ def process_video(
     top_region_imgsz = top_cfg.get('imgsz', 0) or None
     top_region_conf  = top_cfg.get('confidence') or None
 
-    sahi_cfg      = pass_cfg.get('sahi', {})
-    tile_mode     = 'sahi' if sahi_cfg.get('enabled', False) else 'off'
-    tile_size     = sahi_cfg.get('tile_size', 480)
-    tile_overlap  = sahi_cfg.get('tile_overlap', 0.4)
-    tile_interval = sahi_cfg.get('tile_interval', 1)
-    tile_imgsz    = sahi_cfg.get('imgsz', 0) or None
-    tile_conf     = sahi_cfg.get('confidence') or None
+    sahi_cfg          = pass_cfg.get('sahi', {})
+    tile_mode         = 'sahi' if sahi_cfg.get('enabled', False) else 'off'
+    tile_size         = sahi_cfg.get('tile_size', 480)
+    tile_overlap      = sahi_cfg.get('tile_overlap', 0.4)
+    tile_interval     = sahi_cfg.get('tile_interval', 1)
+    tile_imgsz        = sahi_cfg.get('imgsz', 0) or None
+    tile_conf         = sahi_cfg.get('confidence') or None
+    tile_y_max        = sahi_cfg.get('y_max_fraction', 1.0)
+    tile_prescale     = sahi_cfg.get('prescale', 1.0)
+
+    # --- Warp pass ---
+    warp_cfg      = pass_cfg.get('warp', {})
+    warp_enabled  = warp_cfg.get('enabled', False)
+    warp_H        = warp_H_inv = warp_dst_size = None
+    if warp_enabled:
+        warp_src = warp_cfg.get('src_points')
+        warp_dst_size = warp_cfg.get('dst_size')
+        warp_conf     = warp_cfg.get('confidence') or None
+        warp_imgsz    = warp_cfg.get('imgsz', 0) or None
+        if warp_src and warp_dst_size and len(warp_src) == 4:
+            warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+            print(f"Warp pass enabled: {warp_src} → {warp_dst_size}")
+        else:
+            print("WARNING: warp pass enabled but src_points/dst_size not configured. "
+                  "Run warp_calibrate.py to generate them. Warp pass disabled.")
+            warp_enabled = False
 
     nms_iou              = nms_cfg.get('hard_iou', 0.45)
     nms_containment      = nms_cfg.get('containment_fraction', 0.8)
@@ -487,6 +601,7 @@ def process_video(
                         proc_frame, model, iou_threshold,
                         tile_conf or confidence_threshold,
                         tile_size, tile_overlap, tile_imgsz, class_ids, half=half, device=device,
+                        y_max_fraction=tile_y_max, prescale=tile_prescale,
                     )
                     _cached_tile_dets = tile_dets
                 elif tile_mode == "sahi":
@@ -494,9 +609,19 @@ def process_video(
                 else:
                     tile_dets = []
 
+                # Pass 4: optional perspective warp pass
+                warp_dets = []
+                if warp_enabled:
+                    warp_dets = _run_warp_pass(
+                        proc_frame, model, iou_threshold,
+                        warp_conf or confidence_threshold,
+                        warp_H, warp_H_inv, warp_dst_size,
+                        warp_imgsz, class_ids, half=half, device=device,
+                    )
+
                 # Merge, clip, scale back, NMS
                 merged_dets = []
-                for det in full_dets + top_dets + tile_dets:
+                for det in full_dets + top_dets + tile_dets + warp_dets:
                     clipped = _clip_detection(det, frame_w=proc_w, frame_h=proc_h)
                     if clipped is not None:
                         merged_dets.append(clipped)
@@ -662,7 +787,7 @@ def process_video(
 
 def main():
     parser = argparse.ArgumentParser(description="RT-DETR + DeepSORT tracking.")
-    parser.add_argument("--config", default="./config.yaml", help="Path to YAML config file.")
+    parser.add_argument("--config", default="./config_trim4.yaml", help="Path to YAML config file.")
     parser.add_argument("--input",  "-i", default=None, help="Override input video path from config.")
     parser.add_argument("--output", "-o", default=None, help="Override output video path.")
     parser.add_argument("--model",  "-m", default=None, help="Override model path from config.")

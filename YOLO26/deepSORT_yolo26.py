@@ -4,6 +4,8 @@ import argparse
 import os
 from collections import defaultdict
 
+import yaml
+
 import cv2
 import numpy as np
 import torch
@@ -23,26 +25,44 @@ DEFAULT_MODEL_PATH = './yolo26l_100epoch_v5.pt'
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_model(model_path, device):
+def load_model(model_path, device, use_compile=False):
     """Load a YOLO26 model checkpoint."""
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found: {model_path}")
     print(f"Loading YOLO26 model: {model_path}")
     model = YOLO(model_path)
     model.to(device)
+    if use_compile and device == 'cuda':
+        try:
+            model.model = torch.compile(model.model)
+            print("torch.compile enabled (first inference will be slower while compiling).")
+        except Exception as e:
+            print(f"torch.compile unavailable, skipping: {e}")
     print(f"Model loaded on device: {device}")
     return model
+
+
+def load_config(config_path):
+    """Load YAML config file and return as a dict."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    with open(config_path) as f:
+        return yaml.safe_load(f)
 
 
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
 
-def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None):
+def _run_detector(model, image, conf_threshold, iou_threshold, imgsz=None, half=False, device=None):
     """Run one Ultralytics YOLO detector pass and return raw results."""
     kwargs = {"conf": conf_threshold, "iou": iou_threshold, "agnostic_nms": False, "verbose": False}
     if imgsz is not None:
         kwargs["imgsz"] = imgsz
+    if half:
+        kwargs["half"] = True
+    if device is not None:
+        kwargs["device"] = device
     return model(image, **kwargs)
 
 
@@ -98,21 +118,72 @@ def _compute_iou_xyxy(a, b):
     return inter / denom if denom > 0.0 else 0.0
 
 
-def _hard_nms_per_class(detections, iou_threshold=0.45):
+def _is_contained(inner, outer, min_overlap_fraction=0.8):
+    """
+    Return True if `inner` is substantially contained within `outer`.
+    Checks whether >= min_overlap_fraction of inner's area overlaps outer,
+    regardless of how small inner is relative to outer.  This catches the
+    box-inside-box case that IoU-based NMS misses: a small torso crop fully
+    inside a full-body box has IoU ~0.2 (low union penalty) but overlap
+    fraction ~1.0 (inner is entirely inside outer).
+    """
+    inter_x1 = max(inner[0], outer[0])
+    inter_y1 = max(inner[1], outer[1])
+    inter_x2 = min(inner[2], outer[2])
+    inter_y2 = min(inner[3], outer[3])
+    inter = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+    if inter <= 0.0:
+        return False
+    inner_area = max(0.0, inner[2] - inner[0]) * max(0.0, inner[3] - inner[1])
+    return (inter / inner_area) >= min_overlap_fraction if inner_area > 0.0 else False
+
+
+def _hard_nms_per_class(detections, iou_threshold=0.45, containment_fraction=0.8):
     """
     Greedy hard NMS per class. Always applied first to remove cross-pass/tile
     duplicate boxes before soft-NMS and the tracker see them.
+
+    Two phases:
+      Phase 1 — confidence-sorted greedy IoU NMS + containment (low-conf inner
+                 inside high-conf outer). Handles the standard duplicate case.
+      Phase 2 — size-sorted containment cleanup: removes any box whose area is
+                 >= containment_fraction contained within a *larger* box,
+                 regardless of which has higher confidence. Fixes the reverse
+                 case where a high-confidence partial crop (torso) sits inside a
+                 lower-confidence full-body box and survives Phase 1 because it
+                 becomes `best` first in the confidence-sorted pass.
     """
     by_class = defaultdict(list)
     for det in detections:
         by_class[int(det[5])].append(det)
     kept = []
     for class_dets in by_class.values():
+        # Phase 1: standard confidence-sorted greedy IoU NMS
         dets = sorted(class_dets, key=lambda d: d[4], reverse=True)
+        survivors = []
         while dets:
             best = dets.pop(0)
-            kept.append(best)
-            dets = [d for d in dets if _compute_iou_xyxy(best, d) <= iou_threshold]
+            survivors.append(best)
+            dets = [
+                d for d in dets
+                if _compute_iou_xyxy(best, d) <= iou_threshold
+                and not _is_contained(d, best, containment_fraction)
+            ]
+
+        # Phase 2: remove any survivor substantially contained within a larger
+        # survivor, regardless of confidence ordering.
+        def _box_area(d):
+            return max(0.0, d[2] - d[0]) * max(0.0, d[3] - d[1])
+
+        final = [
+            det for i, det in enumerate(survivors)
+            if not any(
+                _box_area(other) > _box_area(det)
+                and _is_contained(det, other, containment_fraction)
+                for j, other in enumerate(survivors) if j != i
+            )
+        ]
+        kept.extend(final)
     return kept
 
 
@@ -155,54 +226,167 @@ def _apply_crowd_postprocess(detections, crowd_mode, soft_nms_iou, soft_nms_sigm
 # Multi-pass detection helpers
 # ---------------------------------------------------------------------------
 
-def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_threshold, imgsz, class_filter):
+def _run_top_region_pass(frame, model, iou_threshold, top_region_ratio, conf_threshold, imgsz, class_filter, half=False, device=None):
     """Run detection on the upper region of the frame (where distant objects appear)."""
     h, _ = frame.shape[:2]
     top_h = int(max(1, min(h, round(h * top_region_ratio))))
     roi = frame[:top_h, :]
-    results = _run_detector(model, roi, conf_threshold, iou_threshold, imgsz=imgsz)
+    results = _run_detector(model, roi, conf_threshold, iou_threshold, imgsz=imgsz, half=half, device=device)
     return _extract_boxes(results, x_offset=0, y_offset=0, class_filter=class_filter)
 
 
-def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap, imgsz, class_filter):
-    """SAHI-style tiled inference pass; maps all tiles back to full-frame coordinates."""
+def _build_homography(src_points, dst_size):
+    """Compute H (src→dst) and H_inv (dst→src) from 4 calibration points.
+
+    src_points: [[x,y], ...] 4 points in original frame, clockwise from top-left,
+                that form a rectangle in real-world space (e.g. lane corners).
+    dst_size:   [width, height] of the rectified output image.
+    """
+    src = np.array(src_points, dtype=np.float32)
+    dw, dh = dst_size
+    dst = np.array([[0, 0], [dw - 1, 0], [dw - 1, dh - 1], [0, dh - 1]], dtype=np.float32)
+    H     = cv2.getPerspectiveTransform(src, dst)
+    H_inv = cv2.getPerspectiveTransform(dst, src)
+    return H, H_inv
+
+
+def _warp_boxes_to_original(boxes, H_inv):
+    """Map axis-aligned boxes from warped space back to original frame coordinates.
+
+    Because the warp is a projective transform, a rectangle in warped space maps
+    to a quadrilateral in original space.  We transform all 4 corners and take
+    the axis-aligned bounding box of the result.
+    """
+    if not boxes:
+        return []
+    mapped = []
+    for box in boxes:
+        x1, y1, x2, y2 = box[:4]
+        corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+        ch  = np.column_stack([corners, np.ones(4)])
+        t   = (H_inv @ ch.T).T
+        t   = t[:, :2] / t[:, 2:3]
+        mapped.append([
+            float(t[:, 0].min()), float(t[:, 1].min()),
+            float(t[:, 0].max()), float(t[:, 1].max()),
+            box[4], box[5],
+        ])
+    return mapped
+
+
+def _run_warp_pass(frame, model, iou_threshold, conf_threshold, H, H_inv, dst_size,
+                   imgsz, class_filter, half=False, device=None):
+    """Perspective-corrected detection pass.
+
+    Applies the calibrated homography to straighten the camera's perspective
+    distortion, runs detection on the rectified image, then maps boxes back to
+    original frame coordinates via the inverse homography.  This makes distant
+    objects (which shrink toward the top of an overhead camera) appear at a more
+    consistent scale, improving recall without needing very small SAHI tiles.
+
+    Calibrate H/H_inv with warp_calibrate.py and store the points in config.yaml.
+    """
+    dw, dh = dst_size
+    warped       = cv2.warpPerspective(frame, H, (dw, dh))
+    results      = _run_detector(model, warped, conf_threshold, iou_threshold,
+                                 imgsz=imgsz, half=half, device=device)
+    warped_boxes = _extract_boxes(results, class_filter=class_filter)
+    return _warp_boxes_to_original(warped_boxes, H_inv)
+
+
+def _run_tiled_pass(frame, model, iou_threshold, conf_threshold, tile_size, tile_overlap,
+                    imgsz, class_filter, half=False, device=None,
+                    y_max_fraction=1.0, prescale=1.0):
+    """SAHI-style tiled inference pass; batches all tiles into a single model call.
+
+    Args:
+        y_max_fraction: Restrict tiling to the top fraction of the frame (0.0–1.0).
+                        e.g. 0.5 tiles only the top half, saving ~50% compute and
+                        focusing where perspective makes objects small.
+        prescale:       Upscale the tiling region by this factor before slicing tiles.
+                        e.g. 2.0 doubles the apparent size of objects for the model,
+                        equivalent to a simple image-pyramid step. Detections are
+                        scaled back to original coordinates after inference.
+                        Costs proportionally more memory; use 1.5–2.0 for top region.
+    """
     h, w = frame.shape[:2]
+
+    y_limit = max(1, int(round(h * min(1.0, max(0.0, y_max_fraction)))))
+    region  = frame[:y_limit, :]
+
+    prescale = max(1.0, float(prescale))
+    if prescale != 1.0:
+        new_w = int(round(w * prescale))
+        new_h = int(round(y_limit * prescale))
+        region = cv2.resize(region, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    rh, rw = region.shape[:2]
+
     tile = max(64, int(tile_size))
     overlap = max(0.0, min(0.8, float(tile_overlap)))
     stride = max(32, int(round(tile * (1.0 - overlap))))
-    detections = []
 
-    y_starts = list(range(0, max(1, h - tile + 1), stride))
-    x_starts = list(range(0, max(1, w - tile + 1), stride))
-    if not y_starts or y_starts[-1] != max(0, h - tile):
-        y_starts.append(max(0, h - tile))
-    if not x_starts or x_starts[-1] != max(0, w - tile):
-        x_starts.append(max(0, w - tile))
+    y_starts = list(range(0, max(1, rh - tile + 1), stride))
+    x_starts = list(range(0, max(1, rw - tile + 1), stride))
+    if not y_starts or y_starts[-1] != max(0, rh - tile):
+        y_starts.append(max(0, rh - tile))
+    if not x_starts or x_starts[-1] != max(0, rw - tile):
+        x_starts.append(max(0, rw - tile))
 
+    tiles, offsets = [], []
     for y0 in y_starts:
         for x0 in x_starts:
-            y1 = min(h, y0 + tile)
-            x1 = min(w, x0 + tile)
-            tile_img = frame[y0:y1, x0:x1]
+            y1 = min(rh, y0 + tile)
+            x1 = min(rw, x0 + tile)
+            tile_img = region[y0:y1, x0:x1]
             if tile_img.size == 0:
                 continue
-            results = _run_detector(model, tile_img, conf_threshold, iou_threshold, imgsz=imgsz)
-            detections.extend(_extract_boxes(results, x_offset=x0, y_offset=y0, class_filter=class_filter))
+            tiles.append(tile_img)
+            offsets.append((x0, y0))
+
+    if not tiles:
+        return []
+
+    kwargs = {"conf": conf_threshold, "iou": iou_threshold, "agnostic_nms": False, "verbose": False}
+    if imgsz is not None:
+        kwargs["imgsz"] = imgsz
+    if half:
+        kwargs["half"] = True
+    if device is not None:
+        kwargs["device"] = device
+    all_results = model(tiles, **kwargs)
+
+    inv_scale = 1.0 / prescale
+    detections = []
+    for result, (x_offset, y_offset) in zip(all_results, offsets):
+        boxes = _extract_boxes([result], x_offset=x_offset, y_offset=y_offset, class_filter=class_filter)
+        if prescale != 1.0:
+            boxes = [
+                [b[0] * inv_scale, b[1] * inv_scale,
+                 b[2] * inv_scale, b[3] * inv_scale, b[4], b[5]]
+                for b in boxes
+            ]
+        detections.extend(boxes)
     return detections
 
 
-def _detections_to_tracker_inputs(detections, cyclist_class_id=0, pedestrian_class_id=1):
-    """Split flat detection list into per-class DeepSort input tuples."""
-    cyclist_dets, pedestrian_dets = [], []
+def _split_detections_by_class(detections, class_ids, min_confidences=None):
+    """Split flat detection list into per-class DeepSort input tuples.
+
+    min_confidences: optional {class_id: float} applied as a per-class
+    post-filter after the global inference threshold.  Detections below a
+    class's floor are dropped before reaching the tracker.
+    """
+    min_confidences = min_confidences or {}
+    by_class = {cls_id: [] for cls_id in class_ids}
     for x1, y1, x2, y2, conf, cls_int in detections:
-        bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
-        if bbox[2] <= 0 or bbox[3] <= 0:
+        if cls_int not in by_class:
             continue
-        if cls_int == cyclist_class_id:
-            cyclist_dets.append((bbox, float(conf), cls_int))
-        elif cls_int == pedestrian_class_id:
-            pedestrian_dets.append((bbox, float(conf), cls_int))
-    return cyclist_dets, pedestrian_dets
+        if float(conf) < min_confidences.get(cls_int, 0.0):
+            continue
+        bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
+        if bbox[2] > 0 and bbox[3] > 0:
+            by_class[cls_int].append((bbox, float(conf), cls_int))
+    return by_class
 
 
 # ---------------------------------------------------------------------------
@@ -213,31 +397,70 @@ def process_video(
     input_video_path,
     output_video_path,
     model,
-    confidence_threshold=0.65,
-    max_age=15,
-    max_iou_distance=0.6,
-    iou_threshold=0.7,
+    cfg,
+    device='cpu',
     disable_display=True,
-    imgsz=None,
-    crowd_mode="soft-nms",
-    soft_nms_iou=0.25,
-    soft_nms_sigma=0.2,
-    top_region_pass=True,
-    top_region_ratio=0.45,
-    top_region_imgsz=None,
-    top_region_confidence=None,
-    tile_mode="sahi",
-    tile_size=480,
-    tile_overlap=0.6,
-    tile_imgsz=None,
-    tile_confidence=None,
-    nms_iou=0.45,
-    nms_max_overlap=0.7,
-    downscale_width=640,
-    downscale_height=480,
-    debug_detections=False,
     inference_only=False,
 ):
+    # --- Unpack config sections ---
+    inf_cfg   = cfg.get('inference', {})
+    pass_cfg  = cfg.get('passes', {})
+    nms_cfg   = cfg.get('nms', {})
+    dbg_cfg   = cfg.get('debug', {})
+    classes   = cfg.get('classes', [])
+
+    confidence_threshold = inf_cfg.get('confidence', 0.65)
+    iou_threshold        = inf_cfg.get('iou', 0.7)
+    half                 = inf_cfg.get('half', False)
+    imgsz                = inf_cfg.get('imgsz', 0) or None
+    downscale_width      = inf_cfg.get('downscale_width', 0)
+    downscale_height     = inf_cfg.get('downscale_height', 0)
+
+    top_cfg          = pass_cfg.get('top_region', {})
+    top_region_pass  = top_cfg.get('enabled', False)
+    top_region_ratio = top_cfg.get('ratio', 0.45)
+    top_region_imgsz = top_cfg.get('imgsz', 0) or None
+    top_region_conf  = top_cfg.get('confidence') or None
+
+    sahi_cfg      = pass_cfg.get('sahi', {})
+    tile_mode     = 'sahi' if sahi_cfg.get('enabled', False) else 'off'
+    tile_size     = sahi_cfg.get('tile_size', 480)
+    tile_overlap  = sahi_cfg.get('tile_overlap', 0.4)
+    tile_interval = sahi_cfg.get('tile_interval', 1)
+    tile_imgsz    = sahi_cfg.get('imgsz', 0) or None
+    tile_conf     = sahi_cfg.get('confidence') or None
+    tile_y_max    = sahi_cfg.get('y_max_fraction', 1.0)
+    tile_prescale = sahi_cfg.get('prescale', 1.0)
+
+    # --- Warp pass ---
+    warp_cfg     = pass_cfg.get('warp', {})
+    warp_enabled = warp_cfg.get('enabled', False)
+    warp_H       = warp_H_inv = warp_dst_size = None
+    warp_conf    = warp_imgsz = None
+    if warp_enabled:
+        warp_src      = warp_cfg.get('src_points')
+        warp_dst_size = warp_cfg.get('dst_size')
+        warp_conf     = warp_cfg.get('confidence') or None
+        warp_imgsz    = warp_cfg.get('imgsz', 0) or None
+        if warp_src and warp_dst_size and len(warp_src) == 4:
+            warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+            print(f"Warp pass enabled: {warp_src} → {warp_dst_size}")
+        else:
+            print("WARNING: warp pass enabled but src_points/dst_size not configured. "
+                  "Run warp_calibrate.py to generate them. Warp pass disabled.")
+            warp_enabled = False
+
+    nms_iou         = nms_cfg.get('hard_iou', 0.45)
+    nms_containment = nms_cfg.get('containment_fraction', 0.8)
+    crowd_mode      = nms_cfg.get('crowd_mode', 'off')
+    soft_nms_iou    = nms_cfg.get('soft_nms_iou', 0.25)
+    soft_nms_sigma  = nms_cfg.get('soft_nms_sigma', 0.2)
+
+    debug_detections = dbg_cfg.get('log_detections', False)
+    class_ids        = {c['id'] for c in classes}
+    class_map        = {c['id']: c for c in classes}
+    min_confidences  = {c['id']: c['min_confidence'] for c in classes if 'min_confidence' in c}
+
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {input_video_path}")
@@ -250,31 +473,33 @@ def process_video(
 
     print(f"Video: {width}x{height} @ {fps}fps  ({total_frames} frames)")
 
-    # --- Trackers ---
-    cyclist_tracker = pedestrian_tracker = None
+    # --- Per-class trackers ---
+    trackers = {}
+    ids_seen = {}
     if not inference_only:
         if DeepSort is None:
             raise RuntimeError(
                 "deep_sort_realtime is not installed. Install it or run with --inference-only."
             )
-        cyclist_tracker = DeepSort(
-            max_age=max_age, max_iou_distance=max_iou_distance,
-            n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
-        )
-        pedestrian_tracker = DeepSort(
-            max_age=max_age, max_iou_distance=max_iou_distance,
-            n_init=3, nms_max_overlap=nms_max_overlap, embedder="mobilenet",
-        )
-
-    cyclist_ids_seen = set()
-    pedestrian_ids_seen = set()
+        for cls_cfg in classes:
+            cid   = cls_cfg['id']
+            t_cfg = cls_cfg.get('tracker', {})
+            trackers[cid] = DeepSort(
+                max_age=t_cfg.get('max_age', 15),
+                max_iou_distance=t_cfg.get('max_iou_distance', 0.5),
+                n_init=t_cfg.get('n_init', 3),
+                nms_max_overlap=t_cfg.get('nms_max_overlap', 0.3),
+                max_cosine_distance=t_cfg.get('max_cosine_distance', 0.2),
+                embedder=t_cfg.get('embedder', 'mobilenet'),
+            )
+            ids_seen[cid] = set()
 
     # --- Video writer with codec fallbacks ---
     output_dir = os.path.dirname(output_video_path)
     if output_dir and not os.path.exists(output_dir):
         raise RuntimeError(f"Output directory does not exist: {output_dir}")
 
-    requested_ext = os.path.splitext(output_video_path)[1].lower()
+    requested_ext  = os.path.splitext(output_video_path)[1].lower()
     requested_base = os.path.splitext(output_video_path)[0] if requested_ext else output_video_path
 
     writer_attempts = []
@@ -303,24 +528,25 @@ def process_video(
     if out is None:
         raise RuntimeError("Could not create VideoWriter with any tried codec.")
 
-    # --- Fixed overlay geometry ---
+    # --- Overlay geometry (dynamic: one row per class) ---
     font_scale, font_thickness, padding, line_spacing = 0.8, 2, 15, 5
-    max_text_size, _ = cv2.getTextSize("Pedestrians: 999 (Total: 9999)", cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-    max_text_width = max(max_text_size[0], 350)
-    sample_size, _ = cv2.getTextSize("Cyclists: 0 (Total: 0)", cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
-    text_height = sample_size[1]
-    text_x = width - max_text_width - padding
-    text_y_pedestrian = height - padding
-    text_y_cyclist = text_y_pedestrian - text_height - line_spacing
+    sample_size, _ = cv2.getTextSize("Pedestrians: 999 (Total: 9999)",
+                                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+    text_height    = sample_size[1]
+    max_text_width = max(sample_size[0], 350)
+    text_x         = width - max_text_width - padding
+    line_height    = text_height + line_spacing
+    n_classes      = len(classes)
     bg_x1 = max(0, text_x - padding)
-    bg_y1 = max(0, text_y_cyclist - text_height - padding)
+    bg_y1 = max(0, height - padding - n_classes * line_height - padding)
     bg_x2 = min(width, text_x + max_text_width + padding)
-    bg_y2 = min(height, text_y_pedestrian + padding)
+    bg_y2 = min(height, height)
 
-    frame_count = 0
-    paused = False
-    speed_multiplier = 1.0
-    annotated_frame = None
+    frame_count       = 0
+    _cached_tile_dets = []
+    paused            = False
+    speed_multiplier  = 1.0
+    annotated_frame   = None
     display_available = not disable_display
 
     progress_bar = tqdm(total=total_frames if total_frames > 0 else None, desc="Processing video", unit="frame")
@@ -343,132 +569,158 @@ def process_video(
                     proc_frame = frame
                     scale_x = scale_y = 1.0
                 proc_h, proc_w = proc_frame.shape[:2]
-                class_filter = {0, 1}
 
                 # Pass 1: full-frame detection
                 full_dets = _extract_boxes(
-                    _run_detector(model, proc_frame, confidence_threshold, iou_threshold, imgsz=imgsz),
-                    class_filter=class_filter,
+                    _run_detector(model, proc_frame, confidence_threshold, iou_threshold,
+                                  imgsz=imgsz, half=half, device=device),
+                    class_filter=class_ids,
                 )
 
-                # Pass 2: optional top-region pass (catches distant objects)
+                # Pass 2: optional top-region pass
                 top_dets = []
                 if top_region_pass:
-                    top_conf = confidence_threshold if top_region_confidence is None else top_region_confidence
                     top_dets = _run_top_region_pass(
-                        proc_frame, model, iou_threshold, top_region_ratio, top_conf, top_region_imgsz, class_filter
+                        proc_frame, model, iou_threshold, top_region_ratio,
+                        top_region_conf or confidence_threshold,
+                        top_region_imgsz, class_ids, half=half, device=device,
                     )
 
-                # Pass 3: optional SAHI-style tiled pass
-                tile_dets = []
-                if tile_mode == "sahi":
-                    tile_conf = confidence_threshold if tile_confidence is None else tile_confidence
+                # Pass 3: optional SAHI tiled pass (batched; runs every tile_interval frames)
+                run_tiles = tile_mode == "sahi" and (frame_count % max(1, tile_interval) == 0)
+                if run_tiles:
                     tile_dets = _run_tiled_pass(
-                        proc_frame, model, iou_threshold, tile_conf, tile_size, tile_overlap, tile_imgsz, class_filter
+                        proc_frame, model, iou_threshold,
+                        tile_conf or confidence_threshold,
+                        tile_size, tile_overlap, tile_imgsz, class_ids, half=half, device=device,
+                        y_max_fraction=tile_y_max, prescale=tile_prescale,
+                    )
+                    _cached_tile_dets = tile_dets
+                elif tile_mode == "sahi":
+                    tile_dets = _cached_tile_dets
+                else:
+                    tile_dets = []
+
+                # Pass 4: optional perspective warp pass
+                warp_dets = []
+                if warp_enabled:
+                    warp_dets = _run_warp_pass(
+                        proc_frame, model, iou_threshold,
+                        warp_conf or confidence_threshold,
+                        warp_H, warp_H_inv, warp_dst_size,
+                        warp_imgsz, class_ids, half=half, device=device,
                     )
 
-                # Merge and clip to proc_frame bounds
+                # Merge, clip, scale back, NMS
                 merged_dets = []
-                for det in full_dets + top_dets + tile_dets:
+                for det in full_dets + top_dets + tile_dets + warp_dets:
                     clipped = _clip_detection(det, frame_w=proc_w, frame_h=proc_h)
                     if clipped is not None:
                         merged_dets.append(clipped)
-
-                # Scale detections back to original frame coordinates
                 if scale_x != 1.0 or scale_y != 1.0:
                     merged_dets = [
-                        [d[0] * scale_x, d[1] * scale_y, d[2] * scale_x, d[3] * scale_y, d[4], d[5]]
+                        [d[0]*scale_x, d[1]*scale_y, d[2]*scale_x, d[3]*scale_y, d[4], d[5]]
                         for d in merged_dets
                     ]
-
-                # Hard NMS (always on): eliminates cross-pass/tile duplicate boxes
-                merged_dets = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou)
-
-                # Optional soft-NMS crowd suppression
+                merged_dets    = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou,
+                                                     containment_fraction=nms_containment)
                 processed_dets = _apply_crowd_postprocess(
-                    merged_dets,
-                    crowd_mode=crowd_mode,
-                    soft_nms_iou=soft_nms_iou,
-                    soft_nms_sigma=soft_nms_sigma,
+                    merged_dets, crowd_mode=crowd_mode,
+                    soft_nms_iou=soft_nms_iou, soft_nms_sigma=soft_nms_sigma,
                     score_threshold=confidence_threshold * 0.5,
                 )
 
                 annotated_frame = frame.copy()
-                cyclist_count = 0
-                pedestrian_count = 0
+                current_counts  = {cid: 0 for cid in class_ids}
 
                 if inference_only:
                     for x1, y1, x2, y2, conf, cls_int in processed_dets:
-                        x1_i, y1_i, x2_i, y2_i = int(x1), int(y1), int(x2), int(y2)
-                        if cls_int == 0:
-                            cyclist_count += 1
-                            color, label, text_color = (0, 255, 0), f"Cyclist {conf:.2f}", (0, 0, 0)
-                        elif cls_int == 1:
-                            pedestrian_count += 1
-                            color, label, text_color = (255, 0, 0), f"Pedestrian {conf:.2f}", (255, 255, 255)
-                        else:
+                        if cls_int not in class_map:
                             continue
+                        if float(conf) < min_confidences.get(cls_int, 0.0):
+                            continue
+                        cls_cfg    = class_map[cls_int]
+                        color      = tuple(cls_cfg['color'])
+                        text_color = tuple(cls_cfg['text_color'])
+                        label      = f"{cls_cfg['name']} {conf:.2f}"
+                        x1_i, y1_i, x2_i, y2_i = int(x1), int(y1), int(x2), int(y2)
+                        current_counts[cls_int] += 1
                         cv2.rectangle(annotated_frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1_i, y1_i - label_size[1] - 10),
-                                      (x1_i + label_size[0], y1_i), color, -1)
+                        lsz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1_i, y1_i - lsz[1] - 10),
+                                      (x1_i + lsz[0], y1_i), color, -1)
                         cv2.putText(annotated_frame, label, (x1_i, y1_i - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
                 else:
-                    cyclist_dets, pedestrian_dets = _detections_to_tracker_inputs(processed_dets)
-                    cyclist_tracks = cyclist_tracker.update_tracks(cyclist_dets, frame=frame) if cyclist_dets else []
-                    pedestrian_tracks = pedestrian_tracker.update_tracks(pedestrian_dets, frame=frame) if pedestrian_dets else []
+                    by_class = _split_detections_by_class(processed_dets, class_ids, min_confidences)
+                    for cid, cls_cfg in class_map.items():
+                        dets   = by_class.get(cid, [])
+                        tracks = trackers[cid].update_tracks(dets, frame=frame) if dets else []
+                        color      = tuple(cls_cfg['color'])
+                        text_color = tuple(cls_cfg['text_color'])
 
-                    for track in [t for t in cyclist_tracks if t.is_confirmed()]:
-                        track_id = track.track_id
-                        x1, y1, x2, y2 = map(int, track.to_tlbr())
-                        cyclist_ids_seen.add(track_id)
-                        cyclist_count += 1
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"Cyclist #{track_id}"
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10),
-                                      (x1 + label_size[0], y1), (0, 255, 0), -1)
-                        cv2.putText(annotated_frame, label, (x1, y1 - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                        # Post-tracker containment check on Kalman track boxes.
+                        # Pre-tracker NMS only sees raw detections — it cannot suppress
+                        # a confirmed track whose Kalman box has drifted into another
+                        # track, or a track that was confirmed before NMS was tightened.
+                        confirmed = [t for t in tracks if t.is_confirmed()]
+                        def _tlbr(t):
+                            return list(map(int, t.to_tlbr()))
+                        def _tarea(t):
+                            b = _tlbr(t)
+                            return max(0, b[2] - b[0]) * max(0, b[3] - b[1])
 
-                    for track in [t for t in pedestrian_tracks if t.is_confirmed()]:
-                        track_id = track.track_id
-                        x1, y1, x2, y2 = map(int, track.to_tlbr())
-                        pedestrian_ids_seen.add(track_id)
-                        pedestrian_count += 1
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                        label = f"Pedestrian #{track_id}"
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10),
-                                      (x1 + label_size[0], y1), (255, 0, 0), -1)
-                        cv2.putText(annotated_frame, label, (x1, y1 - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        visible_tracks = [
+                            t for t in confirmed
+                            if not any(
+                                _tarea(other) > _tarea(t)
+                                and _is_contained(_tlbr(t), _tlbr(other), nms_containment)
+                                for other in confirmed if other is not t
+                            )
+                        ]
+
+                        for track in visible_tracks:
+                            track_id = track.track_id
+                            x1, y1, x2, y2 = map(int, track.to_tlbr())
+                            ids_seen[cid].add(track_id)
+                            current_counts[cid] += 1
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                            conf_val = track.det_conf
+                            conf_str = f" {conf_val:.2f}" if conf_val is not None else ""
+                            label = f"{cls_cfg['name']} #{track_id}{conf_str}"
+                            lsz   = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                            cv2.rectangle(annotated_frame, (x1, y1 - lsz[1] - 10),
+                                          (x1 + lsz[0], y1), color, -1)
+                            cv2.putText(annotated_frame, label, (x1, y1 - 5),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
 
                 if frame_count % 10 == 0:
-                    msg = (
-                        f"Frame {frame_count}: {cyclist_count} cyclist(s), {pedestrian_count} pedestrian(s) | "
-                        f"Total unique: {len(cyclist_ids_seen)} cyclists, {len(pedestrian_ids_seen)} pedestrians"
+                    counts_str = ", ".join(
+                        f"{class_map[cid]['name']}: {current_counts[cid]}" for cid in sorted(class_ids)
                     )
+                    totals_str = ", ".join(
+                        f"{class_map[cid]['name']}: {len(ids_seen[cid])}" for cid in sorted(class_ids)
+                    ) if not inference_only else "n/a"
+                    msg = f"Frame {frame_count}: [{counts_str}] | Total unique: [{totals_str}]"
                     if debug_detections:
-                        msg += (
-                            f" | full={len(full_dets)} top={len(top_dets)} "
-                            f"tile={len(tile_dets)} merged={len(merged_dets)} final={len(processed_dets)}"
-                        )
+                        msg += (f" | full={len(full_dets)} top={len(top_dets)} "
+                                f"tile={len(tile_dets)} merged={len(merged_dets)} final={len(processed_dets)}")
                     print(msg)
 
-                if inference_only:
-                    cyclist_text = f"Cyclists: {cyclist_count}"
-                    pedestrian_text = f"Pedestrians: {pedestrian_count}"
-                else:
-                    cyclist_text = f"Cyclists: {cyclist_count} (Total: {len(cyclist_ids_seen)})"
-                    pedestrian_text = f"Pedestrians: {pedestrian_count} (Total: {len(pedestrian_ids_seen)})"
-
+                # --- Draw overlay counter (bottom-right, one row per class) ---
                 cv2.rectangle(annotated_frame, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
-                cv2.putText(annotated_frame, cyclist_text, (text_x, text_y_cyclist),
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), font_thickness)
-                cv2.putText(annotated_frame, pedestrian_text, (text_x, text_y_pedestrian),
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 0, 0), font_thickness)
+                for i, cls_cfg in enumerate(reversed(classes)):
+                    cid   = cls_cfg['id']
+                    color = tuple(cls_cfg['color'])
+                    cnt   = current_counts.get(cid, 0)
+                    if inference_only:
+                        text = f"{cls_cfg['name']}s: {cnt}"
+                    else:
+                        text = f"{cls_cfg['name']}s: {cnt} (Total: {len(ids_seen.get(cid, set()))})"
+                    text_y = height - padding - i * line_height
+                    cv2.putText(annotated_frame, text, (text_x, text_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness)
+
                 out.write(annotated_frame)
                 frame_count += 1
                 progress_bar.update(1)
@@ -514,8 +766,9 @@ def process_video(
         if inference_only:
             print("Inference-only mode (tracking disabled).")
         else:
-            print(f"Total unique cyclists tracked: {len(cyclist_ids_seen)}")
-            print(f"Total unique pedestrians tracked: {len(pedestrian_ids_seen)}")
+            for cls_cfg in classes:
+                cid = cls_cfg['id']
+                print(f"Total unique {cls_cfg['name']}s tracked: {len(ids_seen.get(cid, set()))}")
 
 
 # ---------------------------------------------------------------------------
@@ -523,83 +776,50 @@ def process_video(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="YOLO26 + DeepSORT cyclist/pedestrian tracking.")
-    parser.add_argument("--input", "-i", default="../trim_3.mp4", help="Input video path.")
-    parser.add_argument("--output", "-o", default="", help="Output video path.")
-    parser.add_argument("--model", "-m", default=DEFAULT_MODEL_PATH, help="YOLO26 .pt checkpoint path.")
-    parser.add_argument("--confidence", "-c", type=float, default=0.65, help="Detection confidence threshold.")
-    parser.add_argument("--iou", type=float, default=0.7, help="Ultralytics NMS IoU threshold.")
-    parser.add_argument("--max-age", type=int, default=15, help="DeepSort max frames to keep an unmatched track.")
-    parser.add_argument("--max-iou-distance", type=float, default=0.6, help="DeepSort max IoU distance for track matching.")
-    parser.add_argument("--no-display", action="store_true", default=True, help="Disable live preview window.")
-    parser.add_argument("--imgsz", type=int, default=0, help="Inference resolution override. 0 = model default.")
-    parser.add_argument("--nms-iou", type=float, default=0.45, help="Hard NMS IoU threshold (pre-tracker duplicate removal).")
-    parser.add_argument("--nms-max-overlap", type=float, default=0.7, help="DeepSort internal NMS overlap threshold.")
-    parser.add_argument("--crowd-mode", choices=["off", "soft-nms"], default="soft-nms", help="Crowd suppression mode.")
-    parser.add_argument("--soft-nms-iou", type=float, default=0.25, help="Soft-NMS IoU trigger threshold.")
-    parser.add_argument("--soft-nms-sigma", type=float, default=0.2, help="Soft-NMS Gaussian penalty sigma.")
-    parser.add_argument("--top-region-pass", action="store_true", default=True, help="Extra inference pass on upper frame region.")
-    parser.add_argument("--top-region-ratio", type=float, default=0.45, help="Fraction of frame height used for top-region pass.")
-    parser.add_argument("--top-region-imgsz", type=int, default=0, help="Top-region inference resolution. 0 = model default.")
-    parser.add_argument("--top-region-confidence", type=float, default=-1.0, help="Top-region confidence. Negative = use --confidence.")
-    parser.add_argument("--tile-mode", choices=["off", "sahi"], default="sahi", help="Tiled SAHI-style inference mode.")
-    parser.add_argument("--tile-size", type=int, default=480, help="Tile size in pixels.")
-    parser.add_argument("--tile-overlap", type=float, default=0.6, help="Tile overlap fraction (0.0-0.8).")
-    parser.add_argument("--tile-imgsz", type=int, default=0, help="Tile inference resolution. 0 = model default.")
-    parser.add_argument("--tile-confidence", type=float, default=-1.0, help="Tile confidence. Negative = use --confidence.")
-    parser.add_argument("--downscale-width", type=int, default=640, help="Resize frame width before inference. 0 to disable.")
-    parser.add_argument("--downscale-height", type=int, default=480, help="Resize frame height before inference. 0 to disable.")
-    parser.add_argument("--debug-detections", action="store_true", help="Print per-pass detection counts every 10 frames.")
-    parser.add_argument("--inference-only", action="store_true", help="Detector-only mode (no DeepSORT tracking).")
+    parser = argparse.ArgumentParser(description="YOLO26 + DeepSORT tracking.")
+    parser.add_argument("--config", default="./config_trim4.yaml", help="Path to YAML config file.")
+    parser.add_argument("--input",  "-i", default=None, help="Override input video path from config.")
+    parser.add_argument("--output", "-o", default=None, help="Override output video path.")
+    parser.add_argument("--model",  "-m", default=None, help="Override model path from config.")
+    parser.add_argument("--no-display",     action="store_true", default=True, help="Disable live preview window.")
+    parser.add_argument("--inference-only", action="store_true", help="Detector-only mode (no DeepSORT).")
     args = parser.parse_args()
 
-    if not os.path.exists(args.input):
-        raise FileNotFoundError(f"Input video not found: {args.input}")
-    if not os.path.exists(args.model):
-        raise FileNotFoundError(f"Model not found: {args.model}")
-    if not (0.0 <= args.confidence <= 1.0):
-        raise ValueError("--confidence must be in [0.0, 1.0]")
-    if not (0.0 < args.top_region_ratio <= 1.0):
-        raise ValueError("--top-region-ratio must be in (0.0, 1.0]")
-    if not (0.0 <= args.tile_overlap <= 0.8):
-        raise ValueError("--tile-overlap must be in [0.0, 0.8]")
+    cfg = load_config(args.config)
 
-    if not args.output:
-        base = os.path.splitext(args.input)[0]
-        args.output = (
-            f"{base}_yolo26_inference.mp4" if args.inference_only else f"{base}_yolo26_deepsort.mp4"
-        )
+    # CLI overrides
+    if args.input:
+        cfg['input'] = args.input
+    if args.output:
+        cfg['output'] = args.output
+    if args.model:
+        cfg['model'] = args.model
 
-    model = load_model(args.model, DEVICE)
+    input_path = cfg['input']
+    model_path = cfg['model']
+
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input video not found: {input_path}")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    if not cfg.get('output'):
+        base     = os.path.splitext(input_path)[0]
+        inf_only = args.inference_only or cfg.get('debug', {}).get('inference_only', False)
+        cfg['output'] = base + ("_yolo26_inference.mp4" if inf_only else "_yolo26_deepsort.mp4")
+
+    use_compile = cfg.get('inference', {}).get('compile', False)
+    model = load_model(model_path, DEVICE, use_compile=use_compile)
 
     process_video(
-        input_video_path=args.input,
-        output_video_path=args.output,
+        input_video_path=cfg['input'],
+        output_video_path=cfg['output'],
         model=model,
-        confidence_threshold=args.confidence,
-        max_age=args.max_age,
-        max_iou_distance=args.max_iou_distance,
-        iou_threshold=args.iou,
+        cfg=cfg,
+        device=DEVICE,
         disable_display=args.no_display,
-        imgsz=(args.imgsz if args.imgsz > 0 else None),
-        crowd_mode=args.crowd_mode,
-        soft_nms_iou=args.soft_nms_iou,
-        soft_nms_sigma=args.soft_nms_sigma,
-        top_region_pass=args.top_region_pass,
-        top_region_ratio=args.top_region_ratio,
-        top_region_imgsz=(args.top_region_imgsz if args.top_region_imgsz > 0 else None),
-        top_region_confidence=(args.top_region_confidence if args.top_region_confidence >= 0 else None),
-        tile_mode=args.tile_mode,
-        tile_size=args.tile_size,
-        tile_overlap=args.tile_overlap,
-        tile_imgsz=(args.tile_imgsz if args.tile_imgsz > 0 else None),
-        tile_confidence=(args.tile_confidence if args.tile_confidence >= 0 else None),
-        nms_iou=args.nms_iou,
-        nms_max_overlap=args.nms_max_overlap,
-        downscale_width=args.downscale_width,
-        downscale_height=args.downscale_height,
-        debug_detections=args.debug_detections,
-        inference_only=args.inference_only,
+        inference_only=args.inference_only or cfg.get('debug', {}).get('inference_only', False),
     )
 
 

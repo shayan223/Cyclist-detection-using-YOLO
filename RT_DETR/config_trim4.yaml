@@ -32,15 +32,45 @@ passes:
     confidence: null     # null = use inference.confidence (0.65)
 
   sahi:
-    enabled: false
-    # At 960×540 with tile_size=480 the Y-stride was only 60px (tiles 89% redundant).
-    # 320px tiles give stride=192px → 3 distinct Y positions and objects appear
-    # larger relative to tile → better recall on small/distant detections.
-    tile_size: 320
-    tile_overlap: 0.4
-    tile_interval: 1     # run every N frames (1 = every frame)
+    enabled: False
+
+    # --- Spatial restriction ---
+    # Camera is mounted at an angle: objects shrink toward the top of frame.
+    # Tiling the whole frame wastes compute on the bottom where the full-frame
+    # pass already works. Restrict SAHI to the top portion only.
+    y_max_fraction: 0.55   # tile only the top 55% of frame height (matches top_region ratio)
+                            # saving ~45% of tile compute vs. full-frame tiling
+
+    # --- Prescale (image pyramid step) ---
+    # Upscale the tiling region before slicing tiles so the model sees objects
+    # at a larger apparent size. 1.5× doubles effective resolution for the
+    # top-region objects without changing tile_size. Higher values cost more
+    # memory but improve recall on very small/distant objects.
+    prescale: 1.5
+
+    # --- Tile geometry ---
+    # At 960×540 × 55% = 960×297 region, prescaled 1.5× → 1440×445.
+    # tile_size=200, overlap=0.3 → stride=140px
+    #   X: ceil(1440/140) ≈ 10 positions
+    #   Y: ceil(445/140)  ≈  3 positions  → ~30 tiles (vs. 80+ for full-frame 320px)
+    # Smaller tiles = objects appear larger relative to tile = better small-object recall.
+    tile_size: 200
+    tile_overlap: 0.3
+    tile_interval: 2       # run every 2nd frame; cached result used on skipped frames
     imgsz: 0
-    confidence: null     # null = use inference.confidence (0.65); per-class filter applies after
+    confidence: null       # null = use inference.confidence (0.65)
+
+  
+  warp:
+    enabled: true
+    src_points:
+      - [474, 65]
+      - [746, 90]
+      - [662, 290]
+      - [184, 157]
+    dst_size: [960, 480]
+    confidence: null
+    imgsz: 0
 
 # ---------------------------------------------------------------------------
 # NMS (pre-tracker duplicate suppression)

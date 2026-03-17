@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UsersshayaDocumentsGitHubCyclist-detection-using-YOLOYOLO26 -type f -name *)"
+    ]
+  }
+}
