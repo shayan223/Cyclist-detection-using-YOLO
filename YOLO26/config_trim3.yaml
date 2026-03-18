@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 # I/O
-model: ./pdx_finetuned_rtdetr.onnx
+model: ./yolo26l_100epoch_v5.pt
 input: ../trim3.mp4
 output: ""   # auto-generated if empty
 

@@ -33,3 +33,4 @@ eurocity_yolo/
 /RT_DETR/runs
 *.pyc
 /YOLO26/runs
+/RT_DETR/PET_Analysis

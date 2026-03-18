@@ -606,6 +606,7 @@ def process_video(
     show_grid=False,
     single_cell_mode=False,
     deadzones=None,
+    show_deadzones=False,
 ):
     deadzones = deadzones or []
     """
@@ -757,6 +758,15 @@ def process_video(
     frame_to_pets             = defaultdict(list)
     conflict_cells_prev_frame = set()
 
+    # --- Single-cell PET timer state (active in single_cell_mode with a selected_cell) ---
+    _sc_timer_state         = 'idle'  # 'idle' | 'running' | 'locked'
+    _sc_timer_start_frame   = None    # frame_count when first class entered the cell
+    _sc_timer_locked_secs   = None    # PET seconds captured at the moment of lock
+    _sc_last_pet_secs       = None    # most recent pet_seconds computed for selected_cell
+    _sc_exit_frame          = None    # frame when the cell last became empty (gap-phase tracking)
+    _sc_lock_hold_frames    = max(1, int(fps * 3))  # hold red "locked" display for ~3 s
+    _sc_lock_hold_remaining = 0
+
     frame_count       = 0
     _cached_tile_dets = []
     display_available = not disable_display
@@ -854,7 +864,7 @@ def process_video(
             confirmed_by_class = {}
             for cid in class_ids:
                 dets   = by_class.get(cid, [])
-                tracks = trackers[cid].update_tracks(dets, frame=frame) if dets else []
+                tracks = trackers[cid].update_tracks(dets, frame=frame)
 
                 # Post-tracker containment check (same as deepSORT_yolo26.py)
                 confirmed = [t for t in tracks if t.is_confirmed()]
@@ -949,6 +959,9 @@ def process_video(
                     time_sec           = frame_count / fps if fps > 0 else 0.0
                     overlap            = pet_frames == 0
                     frame_to_pets[frame_count].append(signed_pet_seconds)
+                    # Capture PET value for the single-cell timer overlay
+                    if selected_cell is not None and (r, c) == selected_cell:
+                        _sc_last_pet_secs = pet_seconds
 
                     if (r, c) not in conflict_cells_prev_frame:
                         name_a = class_map[cid_a]['name']
@@ -968,15 +981,68 @@ def process_video(
                         })
                         cell_pet_values[(r, c)].append(signed_pet_seconds)
 
+            # --- Single-cell PET timer state machine ---
+            if single_cell_mode and selected_cell is not None:
+                _classes_in_cell_now = set()
+                for _cid, _trks in confirmed_by_class.items():
+                    for _trk in _trks:
+                        _b = _trk.to_tlbr()
+                        if selected_cell in _bbox_overlap_cells(
+                            (_b[0], _b[1], _b[2], _b[3]),
+                            width, height, grid_rows, grid_cols,
+                        ):
+                            _classes_in_cell_now.add(_cid)
+                            break
+
+                if _sc_timer_state == 'idle':
+                    if _classes_in_cell_now:
+                        _sc_timer_state       = 'running'
+                        _sc_timer_start_frame = frame_count
+                        _sc_exit_frame        = None
+                elif _sc_timer_state == 'running':
+                    if selected_cell in conflict_cells_this_frame:
+                        # PET event fired → lock and display actual PET seconds
+                        _sc_timer_state         = 'locked'
+                        _sc_timer_locked_secs   = (
+                            _sc_last_pet_secs if _sc_last_pet_secs is not None
+                            else (frame_count - (_sc_exit_frame or _sc_timer_start_frame)) / fps
+                                 if fps > 0 else 0.0
+                        )
+                        _sc_lock_hold_remaining = _sc_lock_hold_frames
+                        _sc_exit_frame          = None
+                    elif _classes_in_cell_now:
+                        # An entity is present (could be re-entry) — clear gap tracking
+                        _sc_exit_frame = None
+                    else:
+                        # Cell is now empty: record exit frame and keep timer running.
+                        # The timer shows the growing gap until max_pet_time expires.
+                        if _sc_exit_frame is None:
+                            _sc_exit_frame = frame_count
+                        if (frame_count - _sc_exit_frame) > max_pet_time:
+                            # Occupancy window expired — no PET possible from this sequence
+                            _sc_timer_state       = 'idle'
+                            _sc_timer_start_frame = None
+                            _sc_exit_frame        = None
+                            _sc_last_pet_secs     = None
+                elif _sc_timer_state == 'locked':
+                    _sc_lock_hold_remaining -= 1
+                    if _sc_lock_hold_remaining <= 0:
+                        _sc_timer_state       = 'idle'
+                        _sc_timer_start_frame = None
+                        _sc_timer_locked_secs = None
+                        _sc_last_pet_secs     = None
+                        _sc_exit_frame        = None
+
             # --- Annotate frame ---
             annotated_frame = frame.copy()
-            # Draw deadzone overlays so exclusion regions are visible in the output video
-            for _dz in deadzones:
-                _pts = np.array(_dz, dtype=np.int32)
-                _ov  = annotated_frame.copy()
-                cv2.fillPoly(_ov, [_pts], (0, 0, 180))
-                cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
-                cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
+            # Draw deadzone overlays (only when --show-deadzones is enabled)
+            if show_deadzones:
+                for _dz in deadzones:
+                    _pts = np.array(_dz, dtype=np.int32)
+                    _ov  = annotated_frame.copy()
+                    cv2.fillPoly(_ov, [_pts], (0, 0, 180))
+                    cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
+                    cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
 
             if show_grid:
                 for i in range(1, grid_rows):
@@ -995,6 +1061,47 @@ def process_video(
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), -1)
                 cv2.addWeighted(overlay, 0.35, annotated_frame, 0.65, 0, annotated_frame)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+            # Selected-cell PET timer overlay (single_cell_mode only)
+            if single_cell_mode and selected_cell is not None:
+                _sr, _sc_col = selected_cell
+                _sx1 = int(_sc_col * cell_w);       _sx2 = int((_sc_col + 1) * cell_w)
+                _sy1 = int(_sr     * cell_h);       _sy2 = int((_sr     + 1) * cell_h)
+                _cell_px = _sx2 - _sx1
+                _fscale  = max(0.45, min(1.4, _cell_px / 120))
+                _thick   = max(1, round(_fscale * 2))
+                if _sc_timer_state == 'idle':
+                    # Faint border marks the selected cell even when idle
+                    cv2.rectangle(annotated_frame, (_sx1, _sy1), (_sx2, _sy2), (160, 160, 160), 1)
+                elif _sc_timer_state == 'running':
+                    if _sc_exit_frame is None:
+                        # Entity currently in cell — show presence duration
+                        _elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
+                        _lbl = f"{_elapsed:.2f}s"
+                    else:
+                        # Gap phase — show time elapsed since entity left
+                        _gap = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
+                        _lbl = f"GAP {_gap:.2f}s"
+                    _clr     = (0, 210, 0)
+                    cv2.rectangle(annotated_frame, (_sx1, _sy1), (_sx2, _sy2), _clr, 2)
+                    (_tw, _th), _bl = cv2.getTextSize(_lbl, cv2.FONT_HERSHEY_SIMPLEX, _fscale, _thick)
+                    _tx = (_sx1 + _sx2) // 2 - _tw // 2
+                    _ty = (_sy1 + _sy2) // 2 + _th // 2
+                    cv2.rectangle(annotated_frame, (_tx - 3, _ty - _th - _bl - 2),
+                                  (_tx + _tw + 3, _ty + _bl + 2), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, _lbl, (_tx, _ty),
+                                cv2.FONT_HERSHEY_SIMPLEX, _fscale, _clr, _thick)
+                elif _sc_timer_state == 'locked':
+                    _lbl = f"PET {_sc_timer_locked_secs:.2f}s"
+                    _clr = (40, 40, 220)
+                    cv2.rectangle(annotated_frame, (_sx1, _sy1), (_sx2, _sy2), _clr, 2)
+                    (_tw, _th), _bl = cv2.getTextSize(_lbl, cv2.FONT_HERSHEY_SIMPLEX, _fscale, _thick)
+                    _tx = (_sx1 + _sx2) // 2 - _tw // 2
+                    _ty = (_sy1 + _sy2) // 2 + _th // 2
+                    cv2.rectangle(annotated_frame, (_tx - 3, _ty - _th - _bl - 2),
+                                  (_tx + _tw + 3, _ty + _bl + 2), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, _lbl, (_tx, _ty),
+                                cv2.FONT_HERSHEY_SIMPLEX, _fscale, _clr, _thick)
 
             for cid, tracks in confirmed_by_class.items():
                 cls_cfg    = class_map[cid]
@@ -1020,6 +1127,26 @@ def process_video(
                     f"CONFLICT ZONES: {len(conflict_cells_this_frame)}",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
                 )
+
+            # Single-cell PET timer HUD (top-left, stacks below conflict-zones line if present)
+            if single_cell_mode and selected_cell is not None and _sc_timer_state != 'idle':
+                _hud_y = 65 if conflict_cells_this_frame else 30
+                if _sc_timer_state == 'running':
+                    if _sc_exit_frame is None:
+                        _hud_elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
+                        _hud_txt   = f"TIMER  {_hud_elapsed:.2f}s"
+                    else:
+                        _hud_gap   = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
+                        _hud_txt   = f"GAP  {_hud_gap:.2f}s"
+                    _hud_color   = (0, 210, 0)
+                else:
+                    _hud_txt     = f"PET LOCKED  {_sc_timer_locked_secs:.2f}s"
+                    _hud_color   = (40, 40, 220)
+                (_hw, _hh), _ = cv2.getTextSize(_hud_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                cv2.rectangle(annotated_frame, (8, _hud_y - _hh - 4),
+                              (14 + _hw, _hud_y + 4), (0, 0, 0), -1)
+                cv2.putText(annotated_frame, _hud_txt,
+                            (10, _hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, _hud_color, 2)
 
             out.write(annotated_frame)
             conflict_cells_prev_frame = conflict_cells_this_frame
@@ -1148,6 +1275,9 @@ def main():
                         help="Interactively draw rectangular deadzones on the first frame before "
                              "processing. Detections whose centre falls inside a deadzone are "
                              "suppressed. Left-click + drag to draw; U undo; C clear; Enter confirm.")
+    parser.add_argument("--show-deadzones", action="store_true",
+                        help="Render deadzone overlays on the output video / live preview "
+                             "(hidden by default; requires --deadzone to have any effect).")
 
     args = parser.parse_args()
 
@@ -1207,6 +1337,7 @@ def main():
         show_grid=args.show_grid,
         single_cell_mode=args.no_grid,
         deadzones=deadzones,
+        show_deadzones=args.show_deadzones,
     )
 
 

@@ -501,6 +501,7 @@ def process_video(
     disable_display=True,
     inference_only=False,
     deadzones=None,
+    show_deadzones=False,
 ):
     deadzones = deadzones or []
     # --- Unpack config sections ---
@@ -738,13 +739,14 @@ def process_video(
                                       if not _is_in_deadzone(d, deadzones)]
 
                 annotated_frame = frame.copy()
-                # Draw deadzone overlays so exclusion regions are visible in the output video
-                for _dz in deadzones:
-                    _pts = np.array(_dz, dtype=np.int32)
-                    _ov  = annotated_frame.copy()
-                    cv2.fillPoly(_ov, [_pts], (0, 0, 180))
-                    cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
-                    cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
+                # Draw deadzone overlays (only when --show-deadzones is enabled)
+                if show_deadzones:
+                    for _dz in deadzones:
+                        _pts = np.array(_dz, dtype=np.int32)
+                        _ov  = annotated_frame.copy()
+                        cv2.fillPoly(_ov, [_pts], (0, 0, 180))
+                        cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
+                        cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
                 current_counts  = {cid: 0 for cid in class_ids}
 
                 if inference_only:
@@ -769,7 +771,7 @@ def process_video(
                     by_class = _split_detections_by_class(processed_dets, class_ids, min_confidences)
                     for cid, cls_cfg in class_map.items():
                         dets   = by_class.get(cid, [])
-                        tracks = trackers[cid].update_tracks(dets, frame=frame) if dets else []
+                        tracks = trackers[cid].update_tracks(dets, frame=frame)
                         color      = tuple(cls_cfg['color'])
                         text_color = tuple(cls_cfg['text_color'])
 
@@ -901,6 +903,9 @@ def main():
                         help="Interactively draw rectangular deadzones on the first frame before "
                              "processing. Detections whose centre falls inside a deadzone are "
                              "suppressed. Left-click + drag to draw; U undo; C clear; Enter confirm.")
+    parser.add_argument("--show-deadzones", action="store_true",
+                        help="Render deadzone overlays on the output video / live preview "
+                             "(hidden by default; requires --deadzone to have any effect).")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -951,6 +956,7 @@ def main():
         disable_display=args.no_display,
         inference_only=args.inference_only or cfg.get('debug', {}).get('inference_only', False),
         deadzones=deadzones,
+        show_deadzones=args.show_deadzones,
     )
 
 

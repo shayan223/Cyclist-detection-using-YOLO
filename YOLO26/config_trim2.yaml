@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 # I/O
-model: ./pdx_finetuned_rtdetr.onnx
+model: ./yolo26l_100epoch_v5.pt
 input: ../trim2.mp4
 output: ""   # auto-generated if empty
 
@@ -13,7 +13,7 @@ output: ""   # auto-generated if empty
 inference:
   # Global floor — must be <= the lowest per-class min_confidence below.
   # Keeps the detection net wide; per-class min_confidence does the real filtering.
-  confidence: 0.65
+  confidence: 0.6
   iou: 0.7             # Ultralytics internal NMS IoU (0.9 was too permissive)
   half: true           # FP16 (requires CUDA GPU)
   compile: false       # torch.compile() — PT models only, CUDA only
@@ -64,10 +64,10 @@ passes:
   warp:
     enabled: true
     src_points:
-      - [180, 61]
-      - [281, 62]
-      - [368, 283]
-      - [130, 281]
+      - [197, 63]
+      - [276, 68]
+      - [358, 275]
+      - [152, 278]
     dst_size: [960, 480]
     confidence: null
     imgsz: 0
@@ -101,10 +101,10 @@ classes:
     name: Cyclist
     color: [0, 255, 0]         # BGR box colour
     text_color: [0, 0, 0]      # BGR label text colour
-    min_confidence: 0.75       # post-filter; cyclists score lower so threshold is lower
+    min_confidence: 0.7       # post-filter; cyclists score lower so threshold is lower
     tracker:
-      max_age: 15              # cyclists transit frame faster → need more coasting headroom
-      n_init: 3                # ghost partial-body tracks rarely persist 3 consecutive frames
+      max_age: 10              # cyclists transit frame faster → need more coasting headroom
+      n_init: 2                # ghost partial-body tracks rarely persist 3 consecutive frames
       max_iou_distance: 0.8   # higher than pedestrians — fast movement = larger box shift between frames
       nms_max_overlap: 0.15    # lowered 0.2→0.15: more aggressive duplicate track suppression
       max_cosine_distance: 0.6 # appearance embedding threshold; higher = more permissive re-ID.
@@ -117,13 +117,13 @@ classes:
     name: Pedestrian
     color: [255, 0, 0]
     text_color: [255, 255, 255]
-    min_confidence: 0.70       # pedestrians score higher; stricter filter reduces false positives
+    min_confidence: 0.65       # pedestrians score higher; stricter filter reduces false positives
     tracker:
-      max_age: 30              # slower movement, standard coasting window
+      max_age: 10              # slower movement, standard coasting window
       n_init: 4                # extra confirmation frames filter brief ghost detections
-      max_iou_distance: 0.50   # tighter association; pedestrians move slowly between frames
+      max_iou_distance: 0.40   # tighter association; pedestrians move slowly between frames
       nms_max_overlap: 0.15    # lowered 0.2→0.15: kills persistent overlapping duplicate tracks
-      max_cosine_distance: 0.3 # tighter than cyclists — pedestrians are more visually distinct
+      max_cosine_distance: 1.0 # tighter than cyclists — pedestrians are more visually distinct
                                # from each other; stricter appearance matching avoids ID swaps
                                # between nearby pedestrians
       embedder: mobilenet
