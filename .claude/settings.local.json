@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find C:UsersshayaDocumentsGitHubCyclist-detection-using-YOLOYOLO26 -type f -name *)"
+      "Bash(find C:UsersshayaDocumentsGitHubCyclist-detection-using-YOLOYOLO26 -type f -name *)",
+      "WebFetch(domain:learnopencv.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

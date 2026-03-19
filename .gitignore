@@ -34,3 +34,4 @@ eurocity_yolo/
 *.pyc
 /YOLO26/runs
 /RT_DETR/PET_Analysis
+/.claude
