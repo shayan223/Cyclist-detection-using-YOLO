@@ -764,12 +764,15 @@ def process_video(
 
     # --- Single-cell PET timer state (active in single_cell_mode with a selected_cell) ---
     _sc_timer_state         = 'idle'  # 'idle' | 'running' | 'locked'
-    _sc_timer_start_frame   = None    # frame_count when first class entered the cell
+    _sc_timer_start_frame   = None    # frame_count baseline for the conflict-sequence (independent of per-class entry timers)
     _sc_timer_locked_secs   = None    # PET seconds captured at the moment of lock
     _sc_last_pet_secs       = None    # most recent pet_seconds computed for selected_cell
     _sc_exit_frame          = None    # frame when the cell last became empty (gap-phase tracking)
     _sc_lock_hold_frames    = max(1, int(fps * 3))  # hold red "locked" display for ~3 s
     _sc_lock_hold_remaining = 0
+    _sc_prev_classes_in_cell = set()  # for detecting per-class entry events
+    _sc_last_entry_frame_by_class = {}  # cid -> frame_count (independent per-class entry timestamps)
+    _sc_seen_classes              = set()  # classes seen in the current (unlocked) sequence
 
     frame_count       = 0
     _cached_tile_dets = []
@@ -1002,10 +1005,24 @@ def process_video(
                             _classes_in_cell_now.add(_cid)
                             break
 
+                _entered_classes = _classes_in_cell_now.difference(_sc_prev_classes_in_cell)
+                _sc_prev_classes_in_cell = set(_classes_in_cell_now)
+                # Ensure per-class timers update for classes present at sequence start
+                # and any newly-entered classes thereafter.
+                if _sc_timer_state == 'idle' and _classes_in_cell_now:
+                    for _cid0 in _classes_in_cell_now:
+                        _sc_last_entry_frame_by_class[_cid0] = frame_count
+                else:
+                    for _ec in _entered_classes:
+                        _sc_last_entry_frame_by_class[_ec] = frame_count
+
                 if _sc_timer_state == 'idle':
                     if _classes_in_cell_now:
                         _sc_timer_state       = 'running'
-                        _sc_timer_start_frame = frame_count
+                        # Start a new conflict sequence as soon as any class appears in the cell.
+                        # Per-class "last entry" timers update independently below.
+                        _sc_seen_classes       = set(_classes_in_cell_now)
+                        _sc_timer_start_frame  = frame_count
                         _sc_exit_frame        = None
                 elif _sc_timer_state == 'running':
                     if selected_cell in conflict_cells_this_frame:
@@ -1018,7 +1035,12 @@ def process_video(
                         )
                         _sc_lock_hold_remaining = _sc_lock_hold_frames
                         _sc_exit_frame          = None
+                        _sc_prev_classes_in_cell = set()
+                        _sc_seen_classes         = set()
+                        _sc_last_entry_frame_by_class = {}
                     elif _classes_in_cell_now:
+                        # Keep the conflict sequence baseline stable; just record presence.
+                        _sc_seen_classes.update(_classes_in_cell_now)
                         # An entity is present (could be re-entry) — clear gap tracking
                         _sc_exit_frame = None
                     else:
@@ -1032,6 +1054,9 @@ def process_video(
                             _sc_timer_start_frame = None
                             _sc_exit_frame        = None
                             _sc_last_pet_secs     = None
+                            _sc_prev_classes_in_cell = set()
+                            _sc_seen_classes         = set()
+                            _sc_last_entry_frame_by_class = {}
                 elif _sc_timer_state == 'locked':
                     _sc_lock_hold_remaining -= 1
                     if _sc_lock_hold_remaining <= 0:
@@ -1040,6 +1065,9 @@ def process_video(
                         _sc_timer_locked_secs = None
                         _sc_last_pet_secs     = None
                         _sc_exit_frame        = None
+                        _sc_prev_classes_in_cell = set()
+                        _sc_seen_classes         = set()
+                        _sc_last_entry_frame_by_class = {}
 
             # --- Annotate frame ---
             annotated_frame = frame.copy()
@@ -1113,6 +1141,42 @@ def process_video(
                     cv2.putText(annotated_frame, _lbl, (_tx, _ty),
                                 cv2.FONT_HERSHEY_SIMPLEX, _fscale, _clr, _thick)
 
+                # Per-class entry timers (independent of conflict timing): show "time since last entry"
+                if _sc_last_entry_frame_by_class:
+                    _lines = []
+                    for _cid_k in sorted(_sc_last_entry_frame_by_class.keys()):
+                        _last_f = _sc_last_entry_frame_by_class.get(_cid_k)
+                        if _last_f is None:
+                            continue
+                        _dt = (frame_count - _last_f) / fps if fps > 0 else 0.0
+                        _nm = class_map.get(_cid_k, {}).get('name', str(_cid_k))
+                        _prefix = _nm[0].upper() if _nm else str(_cid_k)
+                        _lines.append(f"{_prefix} entry { _dt:.2f}s")
+                    if _lines:
+                        _line_scale = max(0.35, min(1.0, _fscale * 0.75))
+                        _line_thick = max(1, int(round(_thick * 0.75)))
+                        _pad = 3
+                        _y = _sy1 + int(10 * _line_scale)
+                        for _txt in _lines[:4]:
+                            (_lw, _lh), _lbl2 = cv2.getTextSize(_txt, cv2.FONT_HERSHEY_SIMPLEX, _line_scale, _line_thick)
+                            cv2.rectangle(
+                                annotated_frame,
+                                (_sx1 + 2, _y - _lh - _lbl2 - _pad),
+                                (_sx1 + 2 + _lw + 2 * _pad, _y + _pad),
+                                (0, 0, 0),
+                                -1,
+                            )
+                            cv2.putText(
+                                annotated_frame,
+                                _txt,
+                                (_sx1 + 2 + _pad, _y),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                _line_scale,
+                                (230, 230, 230),
+                                _line_thick,
+                            )
+                            _y += int((_lh + _lbl2 + 8) * _line_scale)
+
             # Bounding boxes per class (colors from config)
             for cid, tracks in confirmed_by_class.items():
                 cls_cfg    = class_map[cid]
@@ -1159,6 +1223,23 @@ def process_video(
                               (14 + _hw, _hud_y + 4), (0, 0, 0), -1)
                 cv2.putText(annotated_frame, _hud_txt,
                             (10, _hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, _hud_color, 2)
+                # Add per-class entry timers under the main HUD line
+                if _sc_last_entry_frame_by_class:
+                    _hud2_y = _hud_y + 28
+                    for _cid_k in sorted(_sc_last_entry_frame_by_class.keys()):
+                        _last_f = _sc_last_entry_frame_by_class.get(_cid_k)
+                        if _last_f is None:
+                            continue
+                        _dt = (frame_count - _last_f) / fps if fps > 0 else 0.0
+                        _nm = class_map.get(_cid_k, {}).get('name', str(_cid_k))
+                        _prefix = _nm[0].upper() if _nm else str(_cid_k)
+                        _txt = f"{_prefix} ENTRY  {_dt:.2f}s ago"
+                        (_w2, _h2), _ = cv2.getTextSize(_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+                        cv2.rectangle(annotated_frame, (8, _hud2_y - _h2 - 4),
+                                      (14 + _w2, _hud2_y + 4), (0, 0, 0), -1)
+                        cv2.putText(annotated_frame, _txt,
+                                    (10, _hud2_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 230, 230), 2)
+                        _hud2_y += 22
 
             out.write(annotated_frame)
             conflict_cells_prev_frame = conflict_cells_this_frame
