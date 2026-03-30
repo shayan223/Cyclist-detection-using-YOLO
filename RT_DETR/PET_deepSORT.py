@@ -717,6 +717,11 @@ def process_video(
     cell_w = width / grid_cols
     cell_h = height / grid_rows
 
+    # True only when --no-grid AND user picked a cell. When --no-grid but selection fails,
+    # we fall back to full-grid PET; `_sc_active` is False so neighbor aggregation and PET
+    # math match normal full-grid mode (class-separated timer/HUD stay off).
+    _sc_active = bool(single_cell_mode and selected_cell is not None)
+
     # --- Per-class DeepSORT trackers (params from config) ---
     if DeepSort is None:
         raise RuntimeError(
@@ -762,7 +767,7 @@ def process_video(
     frame_to_pets             = defaultdict(list)
     conflict_cells_prev_frame = set()
 
-    # --- Single-cell PET timer state (active in single_cell_mode with a selected_cell) ---
+    # --- Single-cell PET timer state (only read/written when _sc_active) ---
     _sc_timer_state         = 'idle'  # 'idle' | 'running' | 'locked'
     _sc_timer_start_frame   = None    # frame_count baseline for the conflict-sequence (independent of per-class entry timers)
     _sc_timer_locked_secs   = None    # PET seconds captured at the moment of lock
@@ -772,7 +777,6 @@ def process_video(
     _sc_lock_hold_remaining = 0
     _sc_prev_classes_in_cell = set()  # for detecting per-class entry events
     _sc_last_entry_frame_by_class = {}  # cid -> frame_count (independent per-class entry timestamps)
-    _sc_seen_classes              = set()  # classes seen in the current (unlocked) sequence
 
     frame_count       = 0
     _cached_tile_dets = []
@@ -924,7 +928,7 @@ def process_video(
             conflict_cells_this_frame = set()
 
             if cid_a is not None and cid_b is not None:
-                if selected_cell is not None:
+                if _sc_active:
                     cells_to_check = {selected_cell} if selected_cell in grid_occupancy else set()
                 else:
                     cells_to_check = set(grid_occupancy.keys())
@@ -935,7 +939,7 @@ def process_video(
 
                     # Aggregate timestamps from this cell and optionally its 3x3 neighbors
                     list_a, list_b = [], []
-                    if use_neighbors and not single_cell_mode:
+                    if use_neighbors and not _sc_active:
                         cells_region = _neighbor_cells(r, c, grid_rows, grid_cols, include_self=True)
                     else:
                         cells_region = {(r, c)}
@@ -971,7 +975,7 @@ def process_video(
                     overlap            = pet_frames == 0
                     frame_to_pets[frame_count].append(signed_pet_seconds)
                     # Capture PET value for the single-cell timer overlay
-                    if selected_cell is not None and (r, c) == selected_cell:
+                    if _sc_active and (r, c) == selected_cell:
                         _sc_last_pet_secs = pet_seconds
 
                     if (r, c) not in conflict_cells_prev_frame:
@@ -993,7 +997,7 @@ def process_video(
                         cell_pet_values[(r, c)].append(signed_pet_seconds)
 
             # --- Single-cell PET timer state machine ---
-            if single_cell_mode and selected_cell is not None:
+            if _sc_active:
                 _classes_in_cell_now = set()
                 for _cid, _trks in confirmed_by_class.items():
                     for _trk in _trks:
@@ -1021,7 +1025,6 @@ def process_video(
                         _sc_timer_state       = 'running'
                         # Start a new conflict sequence as soon as any class appears in the cell.
                         # Per-class "last entry" timers update independently below.
-                        _sc_seen_classes       = set(_classes_in_cell_now)
                         _sc_timer_start_frame  = frame_count
                         _sc_exit_frame        = None
                 elif _sc_timer_state == 'running':
@@ -1036,11 +1039,8 @@ def process_video(
                         _sc_lock_hold_remaining = _sc_lock_hold_frames
                         _sc_exit_frame          = None
                         _sc_prev_classes_in_cell = set()
-                        _sc_seen_classes         = set()
                         _sc_last_entry_frame_by_class = {}
                     elif _classes_in_cell_now:
-                        # Keep the conflict sequence baseline stable; just record presence.
-                        _sc_seen_classes.update(_classes_in_cell_now)
                         # An entity is present (could be re-entry) — clear gap tracking
                         _sc_exit_frame = None
                     else:
@@ -1055,7 +1055,6 @@ def process_video(
                             _sc_exit_frame        = None
                             _sc_last_pet_secs     = None
                             _sc_prev_classes_in_cell = set()
-                            _sc_seen_classes         = set()
                             _sc_last_entry_frame_by_class = {}
                 elif _sc_timer_state == 'locked':
                     _sc_lock_hold_remaining -= 1
@@ -1066,7 +1065,6 @@ def process_video(
                         _sc_last_pet_secs     = None
                         _sc_exit_frame        = None
                         _sc_prev_classes_in_cell = set()
-                        _sc_seen_classes         = set()
                         _sc_last_entry_frame_by_class = {}
 
             # --- Annotate frame ---
@@ -1100,8 +1098,8 @@ def process_video(
                 cv2.addWeighted(overlay, 0.35, annotated_frame, 0.65, 0, annotated_frame)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
-            # Selected-cell PET timer overlay (single_cell_mode only)
-            if single_cell_mode and selected_cell is not None:
+            # Selected-cell PET timer overlay (only when --no-grid and a cell was selected)
+            if _sc_active:
                 _sr, _sc_col = selected_cell
                 _sx1 = int(_sc_col * cell_w);       _sx2 = int((_sc_col + 1) * cell_w)
                 _sy1 = int(_sr     * cell_h);       _sy2 = int((_sr     + 1) * cell_h)
@@ -1141,42 +1139,6 @@ def process_video(
                     cv2.putText(annotated_frame, _lbl, (_tx, _ty),
                                 cv2.FONT_HERSHEY_SIMPLEX, _fscale, _clr, _thick)
 
-                # Per-class entry timers (independent of conflict timing): show "time since last entry"
-                if _sc_last_entry_frame_by_class:
-                    _lines = []
-                    for _cid_k in sorted(_sc_last_entry_frame_by_class.keys()):
-                        _last_f = _sc_last_entry_frame_by_class.get(_cid_k)
-                        if _last_f is None:
-                            continue
-                        _dt = (frame_count - _last_f) / fps if fps > 0 else 0.0
-                        _nm = class_map.get(_cid_k, {}).get('name', str(_cid_k))
-                        _prefix = _nm[0].upper() if _nm else str(_cid_k)
-                        _lines.append(f"{_prefix} entry { _dt:.2f}s")
-                    if _lines:
-                        _line_scale = max(0.35, min(1.0, _fscale * 0.75))
-                        _line_thick = max(1, int(round(_thick * 0.75)))
-                        _pad = 3
-                        _y = _sy1 + int(10 * _line_scale)
-                        for _txt in _lines[:4]:
-                            (_lw, _lh), _lbl2 = cv2.getTextSize(_txt, cv2.FONT_HERSHEY_SIMPLEX, _line_scale, _line_thick)
-                            cv2.rectangle(
-                                annotated_frame,
-                                (_sx1 + 2, _y - _lh - _lbl2 - _pad),
-                                (_sx1 + 2 + _lw + 2 * _pad, _y + _pad),
-                                (0, 0, 0),
-                                -1,
-                            )
-                            cv2.putText(
-                                annotated_frame,
-                                _txt,
-                                (_sx1 + 2 + _pad, _y),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                _line_scale,
-                                (230, 230, 230),
-                                _line_thick,
-                            )
-                            _y += int((_lh + _lbl2 + 8) * _line_scale)
-
             # Bounding boxes per class (colors from config)
             for cid, tracks in confirmed_by_class.items():
                 cls_cfg    = class_map[cid]
@@ -1196,36 +1158,26 @@ def process_video(
                     cv2.putText(annotated_frame, label, (x1, y1 - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
 
-            # Conflict count overlay
-            if conflict_cells_this_frame:
+            # Conflict count overlay (full-grid mode only; no-grid stacks HUD in block below)
+            if conflict_cells_this_frame and not _sc_active:
                 cv2.putText(
                     annotated_frame,
                     f"CONFLICT ZONES: {len(conflict_cells_this_frame)}",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
                 )
 
-            # Single-cell PET timer HUD (top-left, stacks below conflict-zones line if present)
-            if single_cell_mode and selected_cell is not None and _sc_timer_state != 'idle':
-                _hud_y = 65 if conflict_cells_this_frame else 30
-                if _sc_timer_state == 'running':
-                    if _sc_exit_frame is None:
-                        _hud_elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
-                        _hud_txt   = f"TIMER  {_hud_elapsed:.2f}s"
-                    else:
-                        _hud_gap   = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
-                        _hud_txt   = f"GAP  {_hud_gap:.2f}s"
-                    _hud_color   = (0, 210, 0)
-                else:
-                    _hud_txt     = f"PET LOCKED  {_sc_timer_locked_secs:.2f}s"
-                    _hud_color   = (40, 40, 220)
-                (_hw, _hh), _ = cv2.getTextSize(_hud_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-                cv2.rectangle(annotated_frame, (8, _hud_y - _hh - 4),
-                              (14 + _hw, _hud_y + 4), (0, 0, 0), -1)
-                cv2.putText(annotated_frame, _hud_txt,
-                            (10, _hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, _hud_color, 2)
-                # Add per-class entry timers under the main HUD line
+            # Single-cell HUD: top-left stack — conflict line, per-class entry times, then sequence/PET
+            if _sc_active:
+                _hud_y = 10
+                if conflict_cells_this_frame:
+                    _cz = f"CONFLICT ZONES: {len(conflict_cells_this_frame)}"
+                    (_cw, _ch), _ = cv2.getTextSize(_cz, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    cv2.rectangle(annotated_frame, (8, _hud_y - _ch - 4),
+                                  (14 + _cw, _hud_y + 4), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, _cz, (10, _hud_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    _hud_y += 32
                 if _sc_last_entry_frame_by_class:
-                    _hud2_y = _hud_y + 28
                     for _cid_k in sorted(_sc_last_entry_frame_by_class.keys()):
                         _last_f = _sc_last_entry_frame_by_class.get(_cid_k)
                         if _last_f is None:
@@ -1235,11 +1187,28 @@ def process_video(
                         _prefix = _nm[0].upper() if _nm else str(_cid_k)
                         _txt = f"{_prefix} ENTRY  {_dt:.2f}s ago"
                         (_w2, _h2), _ = cv2.getTextSize(_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
-                        cv2.rectangle(annotated_frame, (8, _hud2_y - _h2 - 4),
-                                      (14 + _w2, _hud2_y + 4), (0, 0, 0), -1)
+                        cv2.rectangle(annotated_frame, (8, _hud_y - _h2 - 4),
+                                      (14 + _w2, _hud_y + 4), (0, 0, 0), -1)
                         cv2.putText(annotated_frame, _txt,
-                                    (10, _hud2_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 230, 230), 2)
-                        _hud2_y += 22
+                                    (10, _hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 230, 230), 2)
+                        _hud_y += 24
+                if _sc_timer_state != 'idle':
+                    if _sc_timer_state == 'running':
+                        if _sc_exit_frame is None:
+                            _hud_elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
+                            _hud_txt = f"TIMER  {_hud_elapsed:.2f}s"
+                        else:
+                            _hud_gap = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
+                            _hud_txt = f"GAP  {_hud_gap:.2f}s"
+                        _hud_color = (0, 210, 0)
+                    else:
+                        _hud_txt = f"PET LOCKED  {_sc_timer_locked_secs:.2f}s"
+                        _hud_color = (40, 40, 220)
+                    (_hw, _hh), _ = cv2.getTextSize(_hud_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    cv2.rectangle(annotated_frame, (8, _hud_y - _hh - 4),
+                                  (14 + _hw, _hud_y + 4), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, _hud_txt,
+                                (10, _hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, _hud_color, 2)
 
             out.write(annotated_frame)
             conflict_cells_prev_frame = conflict_cells_this_frame
