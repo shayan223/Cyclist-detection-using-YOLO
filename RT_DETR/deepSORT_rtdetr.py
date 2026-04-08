@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from collections import defaultdict
 
+import pandas as pd
 import yaml
 
 import cv2
@@ -511,6 +513,7 @@ def process_video(
     inference_only=False,
     deadzones=None,
     show_deadzones=False,
+    csv_output_path=None,
 ):
     deadzones = deadzones or []
     # --- Unpack config sections ---
@@ -658,6 +661,7 @@ def process_video(
     speed_multiplier  = 1.0
     annotated_frame   = None
     display_available = not disable_display
+    frame_prediction_rows = []
 
     progress_bar = tqdm(total=total_frames if total_frames > 0 else None, desc="Processing video", unit="frame")
 
@@ -756,6 +760,7 @@ def process_video(
                         cv2.addWeighted(_ov, 0.25, annotated_frame, 0.75, 0, annotated_frame)
                         cv2.polylines(annotated_frame, [_pts], True, (0, 0, 200), 1)
                 current_counts  = {cid: 0 for cid in class_ids}
+                frame_predictions = []
 
                 if inference_only:
                     for x1, y1, x2, y2, conf, cls_int in processed_dets:
@@ -769,6 +774,12 @@ def process_video(
                         label      = f"{cls_cfg['name']} {conf:.2f}"
                         x1_i, y1_i, x2_i, y2_i = int(x1), int(y1), int(x2), int(y2)
                         current_counts[cls_int] += 1
+                        frame_predictions.append({
+                            "class_id": cls_int,
+                            "class_name": cls_cfg['name'],
+                            "confidence": round(float(conf), 6),
+                            "bbox": [x1_i, y1_i, x2_i, y2_i],
+                        })
                         cv2.rectangle(annotated_frame, (x1_i, y1_i), (x2_i, y2_i), color, 2)
                         lsz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                         cv2.rectangle(annotated_frame, (x1_i, y1_i - lsz[1] - 10),
@@ -810,8 +821,15 @@ def process_video(
                             x1, y1, x2, y2 = map(int, track.to_tlbr())
                             ids_seen[cid].add(track_id)
                             current_counts[cid] += 1
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                             conf_val = track.det_conf
+                            frame_predictions.append({
+                                "class_id": cid,
+                                "class_name": cls_cfg['name'],
+                                "track_id": track_id,
+                                "confidence": round(float(conf_val), 6) if conf_val is not None else None,
+                                "bbox": [x1, y1, x2, y2],
+                            })
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
                             conf_str = f" {conf_val:.2f}" if conf_val is not None else ""
                             label = f"{cls_cfg['name']} #{track_id}{conf_str}"
                             lsz   = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
@@ -846,6 +864,12 @@ def process_video(
                     text_y = height - padding - i * line_height
                     cv2.putText(annotated_frame, text, (text_x, text_y),
                                 cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness)
+
+                if csv_output_path:
+                    frame_prediction_rows.append({
+                        "frame": frame_count,
+                        "predictions_json": json.dumps(frame_predictions),
+                    })
 
                 out.write(annotated_frame)
                 frame_count += 1
@@ -888,6 +912,10 @@ def process_video(
                 cv2.destroyAllWindows()
             except (cv2.error, Exception):
                 pass
+        if csv_output_path:
+            df = pd.DataFrame(frame_prediction_rows, columns=["frame", "predictions_json"])
+            df.to_csv(csv_output_path, index=False)
+            print(f"CSV export: {csv_output_path}")
         print(f"\nDone. Output: {final_output_path}")
         if inference_only:
             print("Inference-only mode (tracking disabled).")
@@ -916,6 +944,8 @@ def main():
     parser.add_argument("--show-deadzones", action="store_true",
                         help="Render deadzone overlays on the output video / live preview "
                              "(hidden by default; requires --deadzone to have any effect).")
+    parser.add_argument("--csv", action="store_true",
+                        help="Export one CSV row per frame with final predictions serialized as JSON.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -967,6 +997,11 @@ def main():
         else:
             print("WARNING: Could not read first frame for deadzone setup.")
 
+    csv_output_path = None
+    if args.csv:
+        video_name = os.path.splitext(os.path.basename(input_path))[0]
+        csv_output_path = os.path.join(os.path.dirname(input_path), f"{video_name}_rtdetr.csv")
+
     process_video(
         input_video_path=cfg['input'],
         output_video_path=cfg['output'],
@@ -977,6 +1012,7 @@ def main():
         inference_only=args.inference_only or cfg.get('debug', {}).get('inference_only', False),
         deadzones=deadzones,
         show_deadzones=args.show_deadzones,
+        csv_output_path=csv_output_path,
     )
 
 
