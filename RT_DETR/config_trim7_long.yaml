@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# RT-DETR + DeepSORT tracking configuration
+# ---------------------------------------------------------------------------
+
+# I/O
+model: ./pdx_finetuned_rtdetr.onnx
+input: ../trim7.mp4
+output: ""   # auto-generated if empty
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+inference:
+  # Global floor — must be <= the lowest per-class min_confidence below.
+  # Keeps the detection net wide; per-class min_confidence does the real filtering.
+  confidence: 0.65
+  iou: 0.7             # Ultralytics internal NMS IoU (0.9 was too permissive)
+  half: true           # FP16 (requires CUDA GPU)
+  compile: false       # torch.compile() — PT models only, CUDA only
+  imgsz: 0             # inference image size (0 = model default, typically 640)
+  downscale_width: 960   # resize frame before inference (0 to disable)
+  downscale_height: 540
+
+# ---------------------------------------------------------------------------
+# Detection passes
+# ---------------------------------------------------------------------------
+passes:
+  top_region:
+    enabled: true
+    ratio: 0.55          # fraction of frame height used for top-region crop
+    imgsz: 0
+    confidence: null     # null = use inference.confidence (0.65)
+
+  sahi:
+    enabled: False
+
+    # --- Spatial restriction ---
+    # Camera is mounted at an angle: objects shrink toward the top of frame.
+    # Tiling the whole frame wastes compute on the bottom where the full-frame
+    # pass already works. Restrict SAHI to the top portion only.
+    y_max_fraction: 0.55   # tile only the top 55% of frame height (matches top_region ratio)
+                            # saving ~45% of tile compute vs. full-frame tiling
+
+    # --- Prescale (image pyramid step) ---
+    # Upscale the tiling region before slicing tiles so the model sees objects
+    # at a larger apparent size. 1.5× doubles effective resolution for the
+    # top-region objects without changing tile_size. Higher values cost more
+    # memory but improve recall on very small/distant objects.
+    prescale: 1.5
+
+    # --- Tile geometry ---
+    # At 960×540 × 55% = 960×297 region, prescaled 1.5× → 1440×445.
+    # tile_size=200, overlap=0.3 → stride=140px
+    #   X: ceil(1440/140) ≈ 10 positions
+    #   Y: ceil(445/140)  ≈  3 positions  → ~30 tiles (vs. 80+ for full-frame 320px)
+    # Smaller tiles = objects appear larger relative to tile = better small-object recall.
+    tile_size: 200
+    tile_overlap: 0.3
+    tile_interval: 2       # run every 2nd frame; cached result used on skipped frames
+    imgsz: 0
+    confidence: null       # null = use inference.confidence (0.65)
+
+  
+  warp:
+    enabled: true
+    src_points:
+      - [101, 158]
+      - [192, 138]
+      - [301, 286]
+      - [101, 335]
+    dst_size: [960, 480]
+    confidence: null
+    imgsz: 0
+
+# ---------------------------------------------------------------------------
+# NMS (pre-tracker duplicate suppression)
+# ---------------------------------------------------------------------------
+nms:
+  hard_iou: 0.25             # IoU threshold for standard duplicate suppression
+  containment_fraction: 0.50 # suppress a box if >=65% of its area lies inside a larger box
+                             # of the same class. Lowered from 0.8 → 0.65 to catch the edge case
+                             # where a partial-body box slightly overshoots the full-body box
+                             # (~70-75% contained) and narrowly escapes the 0.8 threshold.
+                             # Two genuinely separate nearby people typically overlap at <50%,
+                             # so 0.65 remains conservative enough to avoid false suppression.
+  crowd_mode: soft-nms       # "off" or "soft-nms"
+  soft_nms_iou: 0.25
+  soft_nms_sigma: 0.2
+
+# ---------------------------------------------------------------------------
+# Per-class configuration
+# Add a new entry here to support a new class — no code changes needed.
+#
+# min_confidence: post-detection filter applied per-class after all passes merge.
+#   Cyclist detections are inherently lower-confidence than pedestrians, so their
+#   threshold is set lower. The global inference.confidence acts as the floor so
+#   nothing is dropped before reaching this filter.
+# ---------------------------------------------------------------------------
+classes:
+  - id: 0
+    name: Cyclist
+    color: [0, 255, 0]         # BGR box colour
+    text_color: [0, 0, 0]      # BGR label text colour
+    min_confidence: 0.75       # post-filter; cyclists score lower so threshold is lower
+    tracker:
+      max_age: 15              # cyclists transit frame faster → need more coasting headroom
+      n_init: 3                # ghost partial-body tracks rarely persist 3 consecutive frames
+      max_iou_distance: 0.8   # higher than pedestrians — fast movement = larger box shift between frames
+      nms_max_overlap: 0.15    # lowered 0.2→0.15: more aggressive duplicate track suppression
+      max_cosine_distance: 0.6 # appearance embedding threshold; higher = more permissive re-ID.
+                               # When Kalman box shrinks during coasting and IoU-match fails,
+                               # appearance embedding (helmet/bike silhouette) can still rescue
+                               # the association and prevent a new track (+ overcount) spawning.
+      embedder: mobilenet      # appearance embedding model
+
+  - id: 1
+    name: Pedestrian
+    color: [255, 0, 0]
+    text_color: [255, 255, 255]
+    min_confidence: 0.70       # pedestrians score higher; stricter filter reduces false positives
+    tracker:
+      max_age: 30              # slower movement, standard coasting window
+      n_init: 4                # extra confirmation frames filter brief ghost detections
+      max_iou_distance: 0.50   # tighter association; pedestrians move slowly between frames
+      nms_max_overlap: 0.15    # lowered 0.2→0.15: kills persistent overlapping duplicate tracks
+      max_cosine_distance: 0.3 # tighter than cyclists — pedestrians are more visually distinct
+                               # from each other; stricter appearance matching avoids ID swaps
+                               # between nearby pedestrians
+      embedder: mobilenet
+
+# ---------------------------------------------------------------------------
+# Debug / output mode
+# ---------------------------------------------------------------------------
+debug:
+  log_detections: true    # print per-pass detection counts every 10 frames
+  inference_only: false   # disable DeepSORT; show raw detections only
