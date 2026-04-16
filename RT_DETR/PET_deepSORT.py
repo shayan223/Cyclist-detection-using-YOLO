@@ -14,8 +14,9 @@ Reference: https://criticality-metrics.readthedocs.io/en/latest/time-scale/PET.h
 from __future__ import annotations
 
 import argparse
+import math
 import os
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import yaml
 
@@ -588,6 +589,271 @@ def _build_heatmap_image(cell_pet_values, grid_rows, grid_cols, width, height, f
     blended = cv2.addWeighted(heat_color, 0.45, first_frame, 0.55, 0)
     overlay = np.where(mask[:, :, np.newaxis], blended, first_frame).astype(np.uint8)
     return overlay
+
+
+def _pet_bin_label(pet_seconds):
+    """Map a PET value in seconds to the requested reporting bin."""
+    if pet_seconds is None:
+        return None
+    if pet_seconds < 1.5:
+        return "0-1.5s"
+    if pet_seconds < 3.0:
+        return "1.5-3s"
+    if pet_seconds < 5.0:
+        return "3-5s"
+    return "5+s"
+
+
+def _track_anchor_point(tlbr):
+    """Use bottom-center as the ground-contact proxy for trajectory and speed."""
+    x1, y1, x2, y2 = tlbr
+    return (float((x1 + x2) / 2.0), float(y2))
+
+
+def _append_point_if_new(points, frame_idx, point):
+    """Append a visit/history point only when it materially changes the path."""
+    point = (float(point[0]), float(point[1]))
+    if not points or points[-1][0] != frame_idx or points[-1][1] != point:
+        points.append((int(frame_idx), point))
+
+
+def _prune_points(points, min_frame):
+    """Drop trajectory points older than `min_frame` while keeping the newest sample."""
+    while len(points) > 1 and points[0][0] < min_frame:
+        points.popleft()
+
+
+def _region_cells_for_primary(cell, grid_rows, grid_cols, use_neighbors):
+    """Return the region cells considered part of a PET region for a primary cell."""
+    if use_neighbors:
+        return _neighbor_cells(cell[0], cell[1], grid_rows, grid_cols, include_self=True)
+    return {cell}
+
+
+def _region_rect_from_cells(cells, width, height, grid_rows, grid_cols):
+    """Return the pixel-space rectangle that bounds a region made of grid cells."""
+    cell_w = width / grid_cols
+    cell_h = height / grid_rows
+    rows = [r for r, _ in cells]
+    cols = [c for _, c in cells]
+    x1 = min(cols) * cell_w
+    y1 = min(rows) * cell_h
+    x2 = (max(cols) + 1) * cell_w
+    y2 = (max(rows) + 1) * cell_h
+    return (float(x1), float(y1), float(x2), float(y2))
+
+
+def _point_in_rect(point, rect):
+    """Return True if a point lies inside a rectangle."""
+    x, y = point
+    x1, y1, x2, y2 = rect
+    return x1 <= x <= x2 and y1 <= y <= y2
+
+
+def _orientation(a, b, c):
+    """Orientation helper for segment intersection."""
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _on_segment(a, b, p, eps=1e-6):
+    """Return True if `p` lies on segment a-b."""
+    return (
+        min(a[0], b[0]) - eps <= p[0] <= max(a[0], b[0]) + eps
+        and min(a[1], b[1]) - eps <= p[1] <= max(a[1], b[1]) + eps
+    )
+
+
+def _segment_intersection_point(a1, a2, b1, b2, eps=1e-6):
+    """Return the intersection point of two segments, or None if they do not intersect."""
+    x1, y1 = a1
+    x2, y2 = a2
+    x3, y3 = b1
+    x4, y4 = b2
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < eps:
+        for candidate in (a1, a2, b1, b2):
+            if _on_segment(a1, a2, candidate, eps=eps) and _on_segment(b1, b2, candidate, eps=eps):
+                return (float(candidate[0]), float(candidate[1]))
+        return None
+
+    det_a = x1 * y2 - y1 * x2
+    det_b = x3 * y4 - y3 * x4
+    px = (det_a * (x3 - x4) - (x1 - x2) * det_b) / denom
+    py = (det_a * (y3 - y4) - (y1 - y2) * det_b) / denom
+    point = (float(px), float(py))
+    if _on_segment(a1, a2, point, eps=eps) and _on_segment(b1, b2, point, eps=eps):
+        return point
+    return None
+
+
+def _segments_from_points(points):
+    """Build consecutive polyline segments from `(frame, point)` samples."""
+    out = []
+    for idx in range(len(points) - 1):
+        p1 = points[idx][1]
+        p2 = points[idx + 1][1]
+        if p1 != p2:
+            out.append((p1, p2))
+    return out
+
+
+def _polyline_intersects_in_rect(points_a, points_b, rect):
+    """Return `(True, point)` when two polylines intersect inside the region rectangle."""
+    segs_a = _segments_from_points(points_a)
+    segs_b = _segments_from_points(points_b)
+    for a1, a2 in segs_a:
+        for b1, b2 in segs_b:
+            pt = _segment_intersection_point(a1, a2, b1, b2)
+            if pt is not None and _point_in_rect(pt, rect):
+                return True, pt
+    return False, None
+
+
+def _heading_vector_from_points(points):
+    """Estimate a movement vector from the oldest/newest distinct points."""
+    if len(points) < 2:
+        return None
+    start = points[0][1]
+    end = points[-1][1]
+    dx = float(end[0] - start[0])
+    dy = float(end[1] - start[1])
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:
+        return None
+    return (dx, dy)
+
+
+def _angle_delta_degrees(vec_a, vec_b):
+    """Return the unsigned angle between two vectors in degrees."""
+    if vec_a is None or vec_b is None:
+        return None
+    ax, ay = vec_a
+    bx, by = vec_b
+    norm_a = math.hypot(ax, ay)
+    norm_b = math.hypot(bx, by)
+    if norm_a < 1e-6 or norm_b < 1e-6:
+        return None
+    cosine = (ax * bx + ay * by) / (norm_a * norm_b)
+    cosine = max(-1.0, min(1.0, cosine))
+    return float(math.degrees(math.acos(cosine)))
+
+
+def _is_near_parallel(angle_delta_degrees, tolerance_degrees):
+    """Treat both same-direction and opposite-direction motion as near-parallel."""
+    if angle_delta_degrees is None:
+        return True
+    return (
+        angle_delta_degrees <= tolerance_degrees
+        or abs(180.0 - angle_delta_degrees) <= tolerance_degrees
+    )
+
+
+def _speed_to_unit(speed_ft_per_sec, speed_unit):
+    """Convert speed from ft/s to the requested display unit."""
+    if speed_ft_per_sec is None:
+        return None
+    if speed_unit == "mph":
+        return float(speed_ft_per_sec) * 0.681818
+    return float(speed_ft_per_sec)
+
+
+def _speed_unit_suffix(speed_unit):
+    """Human-readable speed unit suffix for overlays and CSV."""
+    return "mph" if speed_unit == "mph" else "ft/s"
+
+
+def _estimate_speed_ft_per_sec(points, fps):
+    """Estimate speed from the last two trajectory points."""
+    if fps <= 0 or len(points) < 2:
+        return None
+    (frame_a, point_a), (frame_b, point_b) = points[-2], points[-1]
+    frame_delta = frame_b - frame_a
+    if frame_delta <= 0:
+        return None
+    dist_pixels = math.hypot(point_b[0] - point_a[0], point_b[1] - point_a[1])
+    return (dist_pixels / frame_delta) * fps
+
+
+def _format_speed_label(speed_value, speed_unit):
+    """Format a speed label for overlays."""
+    if speed_value is None:
+        return None
+    decimals = 1 if speed_unit == "mph" else 2
+    return f"{speed_value:.{decimals}f} { _speed_unit_suffix(speed_unit) }"
+
+
+def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration line"):
+    """
+    Prompt the user to draw a single calibration line.
+
+    Controls
+    --------
+    Left-click + drag : draw/update the calibration line
+    C                 : clear line
+    Enter / Space     : confirm and continue
+    Esc               : cancel speed calibration
+    """
+    state = {"start": None, "end": None, "drawing": False}
+    instructions = [
+        "Draw the full 52 ft bus-stop line: left-click + drag",
+        "C: clear   Enter/Space: confirm   Esc: cancel",
+    ]
+
+    def _mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            state["start"] = (x, y)
+            state["end"] = (x, y)
+            state["drawing"] = True
+        elif event == cv2.EVENT_MOUSEMOVE and state["drawing"]:
+            state["end"] = (x, y)
+        elif event == cv2.EVENT_LBUTTONUP and state["drawing"]:
+            state["end"] = (x, y)
+            state["drawing"] = False
+
+    try:
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _mouse)
+        while True:
+            img = frame.copy()
+            if state["start"] is not None and state["end"] is not None:
+                cv2.line(img, state["start"], state["end"], (0, 255, 255), 2)
+            for idx, txt in enumerate(instructions):
+                y_pos = 22 + idx * 24
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow(window_name, img)
+            key = cv2.waitKey(20) & 0xFF
+            if key in (13, 32) and state["start"] is not None and state["end"] is not None:
+                break
+            if key == 27:
+                state["start"] = None
+                state["end"] = None
+                break
+            if key == ord('c'):
+                state["start"] = None
+                state["end"] = None
+        cv2.destroyWindow(window_name)
+    except (cv2.error, Exception) as e:
+        print(f"Speed calibration drawing unavailable: {e}")
+        state["start"] = None
+        state["end"] = None
+
+    if state["start"] is None or state["end"] is None:
+        return None
+    length_pixels = math.hypot(
+        state["end"][0] - state["start"][0],
+        state["end"][1] - state["start"][1],
+    )
+    if length_pixels < 1e-6:
+        return None
+    return {
+        "start": state["start"],
+        "end": state["end"],
+        "length_pixels": float(length_pixels),
+        "feet_per_pixel": 52.0 / float(length_pixels),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1410,6 +1676,887 @@ def main():
         single_cell_mode=args.no_grid,
         deadzones=deadzones,
         show_deadzones=args.show_deadzones,
+    )
+
+
+def process_video(
+    input_video_path,
+    output_video_path,
+    model,
+    cfg,
+    device='cpu',
+    disable_display=True,
+    grid_size=10,
+    max_pet_time=30,
+    use_neighbors=True,
+    output_csv_path=None,
+    output_heatmap_path=None,
+    show_grid=False,
+    single_cell_mode=False,
+    deadzones=None,
+    show_deadzones=False,
+    parallel_angle_tolerance=15.0,
+    trajectory_history=15,
+    track_speed=False,
+    speed_unit="mph",
+    hide_speed_overlay=False,
+    speed_smoothing_window=5,
+    calibration=None,
+):
+    """Process video for trajectory-aware PET conflict analysis."""
+    deadzones = deadzones or []
+    calibration = calibration or {}
+
+    inf_cfg = cfg.get('inference', {})
+    pass_cfg = cfg.get('passes', {})
+    nms_cfg = cfg.get('nms', {})
+    dbg_cfg = cfg.get('debug', {})
+    classes = cfg.get('classes', [])
+
+    confidence_threshold = inf_cfg.get('confidence', 0.65)
+    iou_threshold = inf_cfg.get('iou', 0.7)
+    half = inf_cfg.get('half', False)
+    imgsz = inf_cfg.get('imgsz', 0) or None
+    downscale_width = inf_cfg.get('downscale_width', 0)
+    downscale_height = inf_cfg.get('downscale_height', 0)
+
+    top_cfg = pass_cfg.get('top_region', {})
+    top_region_pass = top_cfg.get('enabled', False)
+    top_region_ratio = top_cfg.get('ratio', 0.45)
+    top_region_imgsz = top_cfg.get('imgsz', 0) or None
+    top_region_conf = top_cfg.get('confidence') or None
+
+    sahi_cfg = pass_cfg.get('sahi', {})
+    tile_mode = 'sahi' if sahi_cfg.get('enabled', False) else 'off'
+    tile_size = sahi_cfg.get('tile_size', 480)
+    tile_overlap = sahi_cfg.get('tile_overlap', 0.4)
+    tile_interval = sahi_cfg.get('tile_interval', 1)
+    tile_imgsz = sahi_cfg.get('imgsz', 0) or None
+    tile_conf = sahi_cfg.get('confidence') or None
+    tile_y_max = sahi_cfg.get('y_max_fraction', 1.0)
+    tile_prescale = sahi_cfg.get('prescale', 1.0)
+
+    warp_cfg = pass_cfg.get('warp', {})
+    warp_enabled = warp_cfg.get('enabled', False)
+    warp_H = warp_H_inv = warp_dst_size = None
+    warp_conf = warp_imgsz = None
+    if warp_enabled:
+        warp_src = warp_cfg.get('src_points')
+        warp_dst_size = warp_cfg.get('dst_size')
+        warp_conf = warp_cfg.get('confidence') or None
+        warp_imgsz = warp_cfg.get('imgsz', 0) or None
+        if warp_src and warp_dst_size and len(warp_src) == 4:
+            warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+            print(f"Warp pass enabled: {warp_src} -> {warp_dst_size}")
+        else:
+            print("WARNING: warp pass enabled but src_points/dst_size not configured. Warp pass disabled.")
+            warp_enabled = False
+
+    nms_iou = nms_cfg.get('hard_iou', 0.45)
+    nms_containment = nms_cfg.get('containment_fraction', 0.8)
+    crowd_mode = nms_cfg.get('crowd_mode', 'off')
+    soft_nms_iou = nms_cfg.get('soft_nms_iou', 0.25)
+    soft_nms_sigma = nms_cfg.get('soft_nms_sigma', 0.2)
+
+    debug_detections = dbg_cfg.get('log_detections', False)
+    class_ids = {c['id'] for c in classes}
+    class_map = {c['id']: c for c in classes}
+    min_confidences = {c['id']: c['min_confidence'] for c in classes if 'min_confidence' in c}
+
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Error: Could not open video file {input_video_path}")
+
+    grid_rows = grid_cols = grid_size
+    selected_cell = None
+    if single_cell_mode:
+        ret_sel, frame_sel = cap.read()
+        if ret_sel and frame_sel is not None:
+            tqdm.write("Select a grid cell by clicking on the frame; press Enter/Space or q/ESC to confirm.")
+            selected_cell = _select_grid_cell_for_pet(frame_sel, grid_rows, grid_cols)
+            if selected_cell is not None:
+                tqdm.write(f"Using single grid cell (row={selected_cell[0]}, col={selected_cell[1]}) for PET computation.")
+            else:
+                tqdm.write("No grid cell selected; falling back to full-grid PET computation.")
+        else:
+            tqdm.write("Could not read first frame for grid selection; falling back to full-grid PET computation.")
+        cap.release()
+        cap = cv2.VideoCapture(input_video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Error: Could not re-open video file {input_video_path}")
+
+    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cell_w = width / grid_cols
+    cell_h = height / grid_rows
+    _sc_active = bool(single_cell_mode and selected_cell is not None)
+    region_neighbors_enabled = bool(use_neighbors and not _sc_active)
+    history_frames = max(int(max_pet_time), int(trajectory_history))
+    speed_feet_per_pixel = calibration.get("feet_per_pixel") if track_speed else None
+
+    if track_speed and speed_feet_per_pixel:
+        print(f"Speed calibration active: 52 ft / {calibration['length_pixels']:.1f}px")
+    elif track_speed:
+        print("WARNING: speed tracking enabled but calibration unavailable. Continuing without speed output.")
+        track_speed = False
+
+    if DeepSort is None:
+        raise RuntimeError("deep_sort_realtime is not installed. Install it with: pip install deep-sort-realtime")
+
+    trackers = {}
+    for cls_cfg in classes:
+        cid = cls_cfg['id']
+        t_cfg = cls_cfg.get('tracker', {})
+        trackers[cid] = DeepSort(
+            max_age=t_cfg.get('max_age', 15),
+            max_iou_distance=t_cfg.get('max_iou_distance', 0.5),
+            n_init=t_cfg.get('n_init', 3),
+            nms_max_overlap=t_cfg.get('nms_max_overlap', 0.3),
+            max_cosine_distance=t_cfg.get('max_cosine_distance', 0.2),
+            embedder=t_cfg.get('embedder', 'mobilenet'),
+        )
+
+    codecs_to_try = [
+        ('mp4v', cv2.VideoWriter_fourcc(*'mp4v')),
+        ('H264', cv2.VideoWriter_fourcc(*'H264')),
+        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
+        ('avc1', cv2.VideoWriter_fourcc(*'avc1')),
+    ]
+    out = None
+    for _, fourcc in codecs_to_try:
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        if out.isOpened():
+            break
+        out.release()
+        out = None
+    if out is None:
+        raise RuntimeError("Could not create VideoWriter with any tried codec.")
+
+    track_histories = defaultdict(deque)
+    track_speed_histories = defaultdict(lambda: deque(maxlen=max(1, int(speed_smoothing_window))))
+    track_speeds_ft = {}
+    active_region_visits = defaultdict(lambda: defaultdict(dict))
+    closed_region_visits = defaultdict(lambda: defaultdict(list))
+    event_signatures = set()
+    conflict_events = []
+    cell_pet_values = defaultdict(list)
+    frame_to_pets = defaultdict(list)
+    display_available = not disable_display
+    _cached_tile_dets = []
+
+    _sc_timer_state = 'idle'
+    _sc_timer_start_frame = None
+    _sc_timer_locked_secs = None
+    _sc_timer_locked_bin = None
+    _sc_last_pet_secs = None
+    _sc_last_pet_bin = None
+    _sc_exit_frame = None
+    _sc_lock_hold_frames = max(1, int(fps * 3))
+    _sc_lock_hold_remaining = 0
+    _sc_prev_classes_in_cell = set()
+    _sc_last_entry_frame_by_class = {}
+    _sc_last_event_frame = -1
+
+    sorted_cids = sorted(class_ids)
+    cid_a, cid_b = (sorted_cids[0], sorted_cids[1]) if len(sorted_cids) >= 2 else (None, None)
+    pbar = tqdm(total=total_frames if total_frames > 0 else None, unit="frame", desc="PET analysis")
+    frame_count = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_h, frame_w = frame.shape[:2]
+            if (downscale_width > 0 and downscale_height > 0
+                    and (frame_w > downscale_width or frame_h > downscale_height)):
+                proc_frame = cv2.resize(frame, (downscale_width, downscale_height))
+                scale_x = frame_w / downscale_width
+                scale_y = frame_h / downscale_height
+            else:
+                proc_frame = frame
+                scale_x = scale_y = 1.0
+            proc_h, proc_w = proc_frame.shape[:2]
+
+            full_dets = _extract_boxes(
+                _run_detector(model, proc_frame, confidence_threshold, iou_threshold,
+                              imgsz=imgsz, half=half, device=device),
+                class_filter=class_ids,
+            )
+            top_dets = []
+            if top_region_pass:
+                top_dets = _run_top_region_pass(
+                    proc_frame, model, iou_threshold, top_region_ratio,
+                    top_region_conf or confidence_threshold,
+                    top_region_imgsz, class_ids, half=half, device=device,
+                )
+
+            run_tiles = tile_mode == "sahi" and (frame_count % max(1, tile_interval) == 0)
+            if run_tiles:
+                tile_dets = _run_tiled_pass(
+                    proc_frame, model, iou_threshold,
+                    tile_conf or confidence_threshold,
+                    tile_size, tile_overlap, tile_imgsz, class_ids, half=half, device=device,
+                    y_max_fraction=tile_y_max, prescale=tile_prescale,
+                )
+                _cached_tile_dets = tile_dets
+            elif tile_mode == "sahi":
+                tile_dets = _cached_tile_dets
+            else:
+                tile_dets = []
+
+            warp_dets = []
+            if warp_enabled:
+                warp_dets = _run_warp_pass(
+                    proc_frame, model, iou_threshold,
+                    warp_conf or confidence_threshold,
+                    warp_H, warp_H_inv, warp_dst_size,
+                    warp_imgsz, class_ids, half=half, device=device,
+                )
+
+            merged_dets = []
+            for det in full_dets + top_dets + tile_dets + warp_dets:
+                clipped = _clip_detection(det, frame_w=proc_w, frame_h=proc_h)
+                if clipped is not None:
+                    merged_dets.append(clipped)
+            if scale_x != 1.0 or scale_y != 1.0:
+                merged_dets = [
+                    [d[0] * scale_x, d[1] * scale_y, d[2] * scale_x, d[3] * scale_y, d[4], d[5]]
+                    for d in merged_dets
+                ]
+            merged_dets = _hard_nms_per_class(merged_dets, iou_threshold=nms_iou, containment_fraction=nms_containment)
+            processed_dets = _apply_crowd_postprocess(
+                merged_dets, crowd_mode=crowd_mode,
+                soft_nms_iou=soft_nms_iou, soft_nms_sigma=soft_nms_sigma,
+                score_threshold=confidence_threshold * 0.5,
+            )
+            if deadzones:
+                processed_dets = [d for d in processed_dets if not _is_in_deadzone(d, deadzones)]
+
+            if debug_detections and frame_count % 10 == 0:
+                print(f"Frame {frame_count}: full={len(full_dets)} top={len(top_dets)} tile={len(tile_dets)} final={len(processed_dets)}")
+
+            by_class = _split_detections_by_class(processed_dets, class_ids, min_confidences)
+            confirmed_by_class = {}
+            track_snapshots = defaultdict(dict)
+            occupied_cells_all = set()
+
+            for cid in class_ids:
+                dets = by_class.get(cid, [])
+                tracks = trackers[cid].update_tracks(dets, frame=frame)
+                confirmed = [t for t in tracks if t.is_confirmed()]
+
+                def _tlbr(track_obj):
+                    return list(map(int, track_obj.to_tlbr()))
+
+                def _tarea(track_obj):
+                    box = _tlbr(track_obj)
+                    return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+
+                visible = [
+                    t for t in confirmed
+                    if not any(
+                        _tarea(other) > _tarea(t)
+                        and _is_contained(_tlbr(t), _tlbr(other), nms_containment)
+                        for other in confirmed if other is not t
+                    )
+                ]
+                confirmed_by_class[cid] = visible
+
+                for track in visible:
+                    track_id = track.track_id
+                    tlbr = track.to_tlbr()
+                    anchor = _track_anchor_point(tlbr)
+                    cells = _bbox_overlap_cells((tlbr[0], tlbr[1], tlbr[2], tlbr[3]), width, height, grid_rows, grid_cols)
+                    occupied_cells_all.update(cells)
+                    history = track_histories[(cid, track_id)]
+                    _append_point_if_new(history, frame_count, anchor)
+                    _prune_points(history, frame_count - history_frames)
+
+                    speed_ft_per_sec = None
+                    if track_speed and speed_feet_per_pixel:
+                        pixel_speed = _estimate_speed_ft_per_sec(history, fps)
+                        if pixel_speed is not None:
+                            speed_ft_per_sec = pixel_speed * speed_feet_per_pixel
+                            track_speed_histories[(cid, track_id)].append(speed_ft_per_sec)
+                        if track_speed_histories[(cid, track_id)]:
+                            speed_ft_per_sec = float(np.mean(track_speed_histories[(cid, track_id)]))
+                            track_speeds_ft[(cid, track_id)] = speed_ft_per_sec
+
+                    track_snapshots[cid][track_id] = {
+                        "track": track,
+                        "tlbr": tlbr,
+                        "point": anchor,
+                        "cells": set(cells),
+                        "speed_ft_per_sec": track_speeds_ft.get((cid, track_id)),
+                    }
+
+            cutoff_frame = frame_count - max_pet_time
+            if _sc_active:
+                cells_with_presence = {selected_cell}
+            else:
+                cells_with_presence = set(occupied_cells_all)
+                if region_neighbors_enabled:
+                    for occ_cell in list(occupied_cells_all):
+                        cells_with_presence.update(_neighbor_cells(occ_cell[0], occ_cell[1], grid_rows, grid_cols, include_self=True))
+            cells_to_update = set(cells_with_presence) | set(active_region_visits.keys()) | set(closed_region_visits.keys())
+
+            for cell in list(cells_to_update):
+                region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
+                present_by_class = defaultdict(dict)
+                for cid, snapshots in track_snapshots.items():
+                    for track_id, snapshot in snapshots.items():
+                        if snapshot["cells"] & region_cells:
+                            present_by_class[cid][track_id] = snapshot["point"]
+
+                active_by_class = active_region_visits[cell]
+                for cid in class_ids:
+                    current_tracks = present_by_class.get(cid, {})
+                    current_active = active_by_class[cid]
+                    for track_id, point in current_tracks.items():
+                        visit = current_active.get(track_id)
+                        if visit is None:
+                            visit = {
+                                "class_id": cid,
+                                "track_id": track_id,
+                                "entry_frame": frame_count,
+                                "last_frame": frame_count,
+                                "points": [(frame_count, point)],
+                            }
+                            current_active[track_id] = visit
+                        else:
+                            visit["last_frame"] = frame_count
+                            _append_point_if_new(visit["points"], frame_count, point)
+
+                    for track_id in list(current_active.keys()):
+                        if track_id in current_tracks:
+                            continue
+                        visit = current_active.pop(track_id)
+                        visit["exit_frame"] = visit["last_frame"]
+                        closed_region_visits[cell][cid].append(visit)
+
+                    if closed_region_visits[cell][cid]:
+                        closed_region_visits[cell][cid] = [
+                            visit for visit in closed_region_visits[cell][cid]
+                            if visit.get("exit_frame", visit["last_frame"]) >= cutoff_frame
+                        ]
+
+                if all(not active_by_class[cid] and not closed_region_visits[cell].get(cid) for cid in class_ids):
+                    active_region_visits.pop(cell, None)
+                    closed_region_visits.pop(cell, None)
+
+            conflict_cells_this_frame = set()
+            events_this_frame = []
+
+            if cid_a is not None and cid_b is not None:
+                cells_to_check = {selected_cell} if _sc_active else (set(active_region_visits.keys()) | set(closed_region_visits.keys()))
+                for cell in sorted(cells_to_check):
+                    region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
+                    region_rect = _region_rect_from_cells(region_cells, width, height, grid_rows, grid_cols)
+                    visits_a = list(closed_region_visits.get(cell, {}).get(cid_a, [])) + list(active_region_visits.get(cell, {}).get(cid_a, {}).values())
+                    visits_b = list(closed_region_visits.get(cell, {}).get(cid_b, [])) + list(active_region_visits.get(cell, {}).get(cid_b, {}).values())
+                    if not visits_a or not visits_b:
+                        continue
+
+                    for visit_a in visits_a:
+                        for visit_b in visits_b:
+                            sig = (
+                                cell,
+                                visit_a["class_id"], visit_a["track_id"], visit_a["entry_frame"], visit_a.get("exit_frame", -1),
+                                visit_b["class_id"], visit_b["track_id"], visit_b["entry_frame"], visit_b.get("exit_frame", -1),
+                            )
+                            if sig in event_signatures:
+                                continue
+
+                            end_a = visit_a.get("exit_frame", visit_a["last_frame"])
+                            end_b = visit_b.get("exit_frame", visit_b["last_frame"])
+                            latest_start = max(visit_a["entry_frame"], visit_b["entry_frame"])
+                            earliest_end = min(end_a, end_b)
+
+                            if latest_start <= earliest_end:
+                                overlap = True
+                                pet_frames = 0
+                                pet_seconds = 0.0
+                                signed_pet_frames = 0
+                                signed_pet_seconds = 0.0
+                            elif end_a < visit_b["entry_frame"]:
+                                overlap = False
+                                pet_frames = visit_b["entry_frame"] - end_a
+                                signed_pet_frames = pet_frames
+                                pet_seconds = pet_frames / fps if fps > 0 else 0.0
+                                signed_pet_seconds = signed_pet_frames / fps if fps > 0 else 0.0
+                            elif end_b < visit_a["entry_frame"]:
+                                overlap = False
+                                pet_frames = visit_a["entry_frame"] - end_b
+                                signed_pet_frames = -pet_frames
+                                pet_seconds = pet_frames / fps if fps > 0 else 0.0
+                                signed_pet_seconds = signed_pet_frames / fps if fps > 0 else 0.0
+                            else:
+                                continue
+
+                            if pet_frames > max_pet_time:
+                                continue
+
+                            intersects, intersection_point = _polyline_intersects_in_rect(visit_a["points"], visit_b["points"], region_rect)
+                            if not intersects:
+                                continue
+
+                            angle_delta = _angle_delta_degrees(
+                                _heading_vector_from_points(visit_a["points"]),
+                                _heading_vector_from_points(visit_b["points"]),
+                            )
+                            if _is_near_parallel(angle_delta, parallel_angle_tolerance):
+                                continue
+
+                            pet_bin = None if overlap else _pet_bin_label(pet_seconds)
+                            name_a = class_map[cid_a]['name']
+                            name_b = class_map[cid_b]['name']
+                            speed_a_ft = track_speeds_ft.get((cid_a, visit_a["track_id"])) if track_speed else None
+                            speed_b_ft = track_speeds_ft.get((cid_b, visit_b["track_id"])) if track_speed else None
+                            speed_key = speed_unit.replace("/", "_")
+                            event_row = {
+                                'frame': frame_count,
+                                'time_sec': round(frame_count / fps if fps > 0 else 0.0, 3),
+                                'cell_row': cell[0],
+                                'cell_col': cell[1],
+                                'pet_frames': int(pet_frames),
+                                'pet_seconds': round(pet_seconds, 3),
+                                'pet_bin': pet_bin,
+                                'pet_undefined_overlap': overlap,
+                                'signed_pet_frames': int(signed_pet_frames),
+                                'signed_pet_seconds': round(signed_pet_seconds, 3),
+                                f'{name_a.lower()}_id': visit_a["track_id"],
+                                f'{name_b.lower()}_id': visit_b["track_id"],
+                                f'{name_a.lower()}_entry_frame': visit_a["entry_frame"],
+                                f'{name_a.lower()}_exit_frame': end_a,
+                                f'{name_b.lower()}_entry_frame': visit_b["entry_frame"],
+                                f'{name_b.lower()}_exit_frame': end_b,
+                                'trajectory_intersects': True,
+                                'intersection_x': round(intersection_point[0], 3) if intersection_point else None,
+                                'intersection_y': round(intersection_point[1], 3) if intersection_point else None,
+                                'trajectory_angle_delta_degrees': round(angle_delta, 3) if angle_delta is not None else None,
+                                'parallel_angle_tolerance_degrees': float(parallel_angle_tolerance),
+                                'parallel_filtered': False,
+                                'speed_tracking_enabled': bool(track_speed),
+                                f'{name_a.lower()}_speed_ft_per_s': round(speed_a_ft, 3) if speed_a_ft is not None else None,
+                                f'{name_b.lower()}_speed_ft_per_s': round(speed_b_ft, 3) if speed_b_ft is not None else None,
+                                f'{name_a.lower()}_speed_{speed_key}': round(_speed_to_unit(speed_a_ft, speed_unit), 3) if speed_a_ft is not None else None,
+                                f'{name_b.lower()}_speed_{speed_key}': round(_speed_to_unit(speed_b_ft, speed_unit), 3) if speed_b_ft is not None else None,
+                            }
+                            conflict_events.append(event_row)
+                            events_this_frame.append(event_row)
+                            conflict_cells_this_frame.add(cell)
+                            event_signatures.add(sig)
+
+                            if not overlap:
+                                frame_to_pets[frame_count].append(pet_seconds)
+                                cell_pet_values[cell].append(pet_seconds)
+                                if _sc_active and cell == selected_cell:
+                                    _sc_last_pet_secs = pet_seconds
+                                    _sc_last_pet_bin = pet_bin
+
+            if _sc_active:
+                classes_in_cell_now = set()
+                selected_region = {selected_cell}
+                for cid, snapshots in track_snapshots.items():
+                    for snapshot in snapshots.values():
+                        if snapshot["cells"] & selected_region:
+                            classes_in_cell_now.add(cid)
+                            break
+
+                entered_classes = classes_in_cell_now.difference(_sc_prev_classes_in_cell)
+                _sc_prev_classes_in_cell = set(classes_in_cell_now)
+                if _sc_timer_state == 'idle' and classes_in_cell_now:
+                    for cid_now in classes_in_cell_now:
+                        _sc_last_entry_frame_by_class[cid_now] = frame_count
+                else:
+                    for cid_now in entered_classes:
+                        _sc_last_entry_frame_by_class[cid_now] = frame_count
+
+                selected_events = [ev for ev in events_this_frame if (ev['cell_row'], ev['cell_col']) == selected_cell]
+                if _sc_timer_state == 'idle':
+                    if classes_in_cell_now:
+                        _sc_timer_state = 'running'
+                        _sc_timer_start_frame = frame_count
+                        _sc_exit_frame = None
+                elif _sc_timer_state == 'running':
+                    if selected_events and _sc_last_event_frame != frame_count:
+                        locked_event = min(selected_events, key=lambda ev: (ev['pet_undefined_overlap'], ev['pet_seconds']))
+                        _sc_timer_state = 'locked'
+                        _sc_timer_locked_secs = locked_event['pet_seconds']
+                        _sc_timer_locked_bin = locked_event['pet_bin'] if not locked_event['pet_undefined_overlap'] else "OVERLAP"
+                        _sc_lock_hold_remaining = _sc_lock_hold_frames
+                        _sc_exit_frame = None
+                        _sc_prev_classes_in_cell = set()
+                        _sc_last_entry_frame_by_class = {}
+                        _sc_last_event_frame = frame_count
+                    elif classes_in_cell_now:
+                        _sc_exit_frame = None
+                    else:
+                        if _sc_exit_frame is None:
+                            _sc_exit_frame = frame_count
+                        if (frame_count - _sc_exit_frame) > max_pet_time:
+                            _sc_timer_state = 'idle'
+                            _sc_timer_start_frame = None
+                            _sc_exit_frame = None
+                            _sc_last_pet_secs = None
+                            _sc_last_pet_bin = None
+                            _sc_prev_classes_in_cell = set()
+                            _sc_last_entry_frame_by_class = {}
+                elif _sc_timer_state == 'locked':
+                    _sc_lock_hold_remaining -= 1
+                    if _sc_lock_hold_remaining <= 0:
+                        _sc_timer_state = 'idle'
+                        _sc_timer_start_frame = None
+                        _sc_timer_locked_secs = None
+                        _sc_timer_locked_bin = None
+                        _sc_last_pet_secs = None
+                        _sc_last_pet_bin = None
+                        _sc_exit_frame = None
+                        _sc_prev_classes_in_cell = set()
+                        _sc_last_entry_frame_by_class = {}
+
+            annotated_frame = frame.copy()
+            if show_deadzones:
+                for zone in deadzones:
+                    pts = np.array(zone, dtype=np.int32)
+                    overlay = annotated_frame.copy()
+                    cv2.fillPoly(overlay, [pts], (0, 0, 180))
+                    cv2.addWeighted(overlay, 0.25, annotated_frame, 0.75, 0, annotated_frame)
+                    cv2.polylines(annotated_frame, [pts], True, (0, 0, 200), 1)
+
+            if show_grid:
+                for i in range(1, grid_rows):
+                    y = int(i * cell_h)
+                    cv2.line(annotated_frame, (0, y), (width, y), (60, 60, 60), 1)
+                for j in range(1, grid_cols):
+                    x = int(j * cell_w)
+                    cv2.line(annotated_frame, (x, 0), (x, height), (60, 60, 60), 1)
+
+            for row, col in conflict_cells_this_frame:
+                x1 = int(col * cell_w)
+                y1 = int(row * cell_h)
+                x2 = int((col + 1) * cell_w)
+                y2 = int((row + 1) * cell_h)
+                overlay = annotated_frame.copy()
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.35, annotated_frame, 0.65, 0, annotated_frame)
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+            if calibration.get("start") and calibration.get("end"):
+                cv2.line(annotated_frame, calibration["start"], calibration["end"], (0, 255, 255), 2)
+
+            for cid, tracks in confirmed_by_class.items():
+                cls_cfg = class_map[cid]
+                color = tuple(cls_cfg['color'])
+                text_color = tuple(cls_cfg['text_color'])
+                prefix = cls_cfg['name'][0]
+                for track in tracks:
+                    track_id = track.track_id
+                    tlbr = track.to_tlbr()
+                    x1, y1, x2, y2 = map(int, tlbr)
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    conf_val = track.det_conf
+                    conf_str = f" {conf_val:.2f}" if conf_val is not None else ""
+                    label = f"{prefix}#{track_id}{conf_str}"
+                    if track_speed and not hide_speed_overlay:
+                        speed_value = _speed_to_unit(track_speeds_ft.get((cid, track_id)), speed_unit)
+                        speed_label = _format_speed_label(speed_value, speed_unit)
+                        if speed_label:
+                            label = f"{label} {speed_label}"
+                    lsz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+                    cv2.rectangle(annotated_frame, (x1, y1 - lsz[1] - 8), (x1 + lsz[0], y1), color, -1)
+                    cv2.putText(annotated_frame, label, (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
+
+            if conflict_cells_this_frame and not _sc_active:
+                cv2.putText(annotated_frame, f"CONFLICT ZONES: {len(conflict_cells_this_frame)}",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            if _sc_active:
+                sr, sc_col = selected_cell
+                sx1 = int(sc_col * cell_w)
+                sx2 = int((sc_col + 1) * cell_w)
+                sy1 = int(sr * cell_h)
+                sy2 = int((sr + 1) * cell_h)
+                cell_px = sx2 - sx1
+                fscale = max(0.45, min(1.4, cell_px / 120))
+                thick = max(1, round(fscale * 2))
+                if _sc_timer_state == 'idle':
+                    cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), (160, 160, 160), 1)
+                elif _sc_timer_state == 'running':
+                    if _sc_exit_frame is None:
+                        elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
+                        lbl = f"{elapsed:.2f}s"
+                    else:
+                        gap = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
+                        lbl = f"GAP {gap:.2f}s"
+                    clr = (0, 210, 0)
+                    cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), clr, 2)
+                    (tw, th), bl = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, fscale, thick)
+                    tx = (sx1 + sx2) // 2 - tw // 2
+                    ty = (sy1 + sy2) // 2 + th // 2
+                    cv2.rectangle(annotated_frame, (tx - 3, ty - th - bl - 2), (tx + tw + 3, ty + bl + 2), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fscale, clr, thick)
+                elif _sc_timer_state == 'locked':
+                    bin_text = f" [{_sc_timer_locked_bin}]" if _sc_timer_locked_bin else ""
+                    lbl = f"PET {_sc_timer_locked_secs:.2f}s{bin_text}"
+                    clr = (40, 40, 220)
+                    cv2.rectangle(annotated_frame, (sx1, sy1), (sx2, sy2), clr, 2)
+                    (tw, th), bl = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, fscale, thick)
+                    tx = (sx1 + sx2) // 2 - tw // 2
+                    ty = (sy1 + sy2) // 2 + th // 2
+                    cv2.rectangle(annotated_frame, (tx - 3, ty - th - bl - 2), (tx + tw + 3, ty + bl + 2), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, lbl, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, fscale, clr, thick)
+
+                hud_y = 10
+                if conflict_cells_this_frame:
+                    cz = f"CONFLICT ZONES: {len(conflict_cells_this_frame)}"
+                    (cw, ch), _ = cv2.getTextSize(cz, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    cv2.rectangle(annotated_frame, (8, hud_y - ch - 4), (14 + cw, hud_y + 4), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, cz, (10, hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    hud_y += 32
+                if _sc_last_entry_frame_by_class:
+                    for cid_key in sorted(_sc_last_entry_frame_by_class.keys()):
+                        last_f = _sc_last_entry_frame_by_class.get(cid_key)
+                        if last_f is None:
+                            continue
+                        dt = (frame_count - last_f) / fps if fps > 0 else 0.0
+                        name = class_map.get(cid_key, {}).get('name', str(cid_key))
+                        prefix = name[0].upper() if name else str(cid_key)
+                        txt = f"{prefix} ENTRY  {dt:.2f}s ago"
+                        (w2, h2), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+                        cv2.rectangle(annotated_frame, (8, hud_y - h2 - 4), (14 + w2, hud_y + 4), (0, 0, 0), -1)
+                        cv2.putText(annotated_frame, txt, (10, hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (230, 230, 230), 2)
+                        hud_y += 24
+                if _sc_timer_state != 'idle':
+                    if _sc_timer_state == 'running':
+                        if _sc_exit_frame is None:
+                            hud_elapsed = (frame_count - _sc_timer_start_frame) / fps if fps > 0 else 0.0
+                            hud_txt = f"TIMER  {hud_elapsed:.2f}s"
+                        else:
+                            hud_gap = (frame_count - _sc_exit_frame) / fps if fps > 0 else 0.0
+                            hud_txt = f"GAP  {hud_gap:.2f}s"
+                        hud_color = (0, 210, 0)
+                    else:
+                        extra_bin = f" [{_sc_timer_locked_bin}]" if _sc_timer_locked_bin else ""
+                        hud_txt = f"PET LOCKED  {_sc_timer_locked_secs:.2f}s{extra_bin}"
+                        hud_color = (40, 40, 220)
+                    (hw, hh), _ = cv2.getTextSize(hud_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    cv2.rectangle(annotated_frame, (8, hud_y - hh - 4), (14 + hw, hud_y + 4), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, hud_txt, (10, hud_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, hud_color, 2)
+
+            out.write(annotated_frame)
+            frame_count += 1
+            pbar.update(1)
+
+            if display_available:
+                try:
+                    cv2.imshow('RT-DETR PET Analysis', annotated_frame)
+                except (cv2.error, Exception):
+                    display_available = False
+            if display_available:
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+
+    except KeyboardInterrupt:
+        tqdm.write("Interrupted by user")
+    finally:
+        pbar.close()
+        cap.release()
+        out.release()
+        if display_available:
+            try:
+                cv2.destroyAllWindows()
+            except (cv2.error, Exception):
+                pass
+
+    base = os.path.splitext(output_video_path)[0]
+    if output_csv_path is None:
+        output_csv_path = base + "_PET_conflicts.csv"
+
+    df = pd.DataFrame(conflict_events)
+    if not df.empty:
+        df.to_csv(output_csv_path, index=False)
+
+    output_heatmap_path = output_heatmap_path or (base + "_PET_heatmap.png")
+    cap_heat = cv2.VideoCapture(input_video_path)
+    if cap_heat.isOpened():
+        ret, first_frame = cap_heat.read()
+        cap_heat.release()
+        if ret and first_frame is not None and cell_pet_values:
+            heatmap_img = _build_heatmap_image(cell_pet_values, grid_rows, grid_cols, width, height, fps, max_pet_time, first_frame)
+            cv2.imwrite(output_heatmap_path, heatmap_img)
+
+    output_plot_path = base + "_PET_over_time.png"
+    if frame_to_pets:
+        frames_all = np.arange(frame_count, dtype=int)
+        time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
+        avg_pet_arr = np.full_like(time_sec_arr, np.nan, dtype=float)
+        for frame_idx, vals in frame_to_pets.items():
+            if 0 <= frame_idx < frame_count and vals:
+                avg_pet_arr[frame_idx] = np.mean(vals)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylim(0, None)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Average PET (s)")
+        ax.set_title("Average PET over time (lower = more critical)")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(output_plot_path, dpi=150)
+        plt.close(fig)
+
+    output_risk_plot_path = base + "_Risk_PET_over_time.png"
+    if frame_to_pets:
+        frames_sorted = sorted(frame_to_pets.keys())
+        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
+        risk_per_frame = np.array([
+            np.mean([1.0 / (1.0 + abs(p)) for p in frame_to_pets[frame_idx]])
+            for frame_idx in frames_sorted
+        ])
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(time_sec_arr, risk_per_frame, color="crimson", linewidth=1)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Risk 1/(1+PET)")
+        ax.set_title("Risk over time (higher = lower PET = more critical)")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(output_risk_plot_path, dpi=150)
+        plt.close(fig)
+
+    tqdm.write(f"Video:   {os.path.abspath(output_video_path)}")
+    tqdm.write(f"CSV:     {os.path.abspath(output_csv_path)}")
+    tqdm.write(f"Heatmap: {os.path.abspath(output_heatmap_path)}")
+    if frame_to_pets:
+        tqdm.write(f"Plot:    {os.path.abspath(output_plot_path)}")
+        tqdm.write(f"Risk:    {os.path.abspath(output_risk_plot_path)}")
+
+    return df
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="RT-DETR PET conflict zone detection with config-driven multi-pass detection."
+    )
+    parser.add_argument("--config", default="./config.yaml", help="Path to YAML config file.")
+    parser.add_argument("--input", "-i", default=None, help="Override input video path from config.")
+    parser.add_argument("--output", "-o", default=None, help="Override output video path.")
+    parser.add_argument("--model", "-m", default=None, help="Override model path from config.")
+    parser.add_argument("--grid-size", type=int, default=100, help="N for NxN conflict grid (default: 100).")
+    parser.add_argument("--max-pet-time", type=int, default=300, help="Conflict window in frames (default: 300).")
+    parser.add_argument("--no-neighbors", action="store_true", help="Disable 3x3 neighbor cell aggregation.")
+    parser.add_argument("--show-grid", action="store_true", help="Draw faint grid lines on output video.")
+    parser.add_argument("--no-grid", action="store_true", help="Single-cell mode: user clicks one cell; PET computed only in that cell.")
+    parser.add_argument("--csv", metavar="PATH", help="Output CSV path (default: auto).")
+    parser.add_argument("--heatmap", metavar="PATH", help="Output heatmap image path (default: auto).")
+    parser.add_argument("--display", action="store_true", help="Show live preview window.")
+    parser.add_argument("--deadzone", action="store_true", help="Interactively draw rectangular deadzones on the first frame before processing.")
+    parser.add_argument("--show-deadzones", action="store_true", help="Render deadzone overlays on the output video / live preview.")
+    parser.add_argument("--parallel-angle-tolerance", type=float, default=15.0,
+                        help="Exclude PET pairs when the trajectory angle is within this many degrees of 0 or 180.")
+    parser.add_argument("--trajectory-history", type=int, default=15,
+                        help="Recent frame history used for trajectory heading/intersection checks.")
+    parser.add_argument("--track-speed", action="store_true",
+                        help="Prompt for a 52 ft calibration line on the first frame and estimate object speed.")
+    parser.add_argument("--speed-unit", choices=["mph", "ft/s"], default="mph",
+                        help="Display/export unit for speed outputs.")
+    parser.add_argument("--hide-speed-overlay", action="store_true",
+                        help="Keep speed in CSV outputs but hide speed labels on the video.")
+
+    args = parser.parse_args()
+    cfg = load_config(args.config)
+    if args.input:
+        cfg['input'] = args.input
+    if args.output:
+        cfg['output'] = args.output
+    if args.model:
+        cfg['model'] = args.model
+
+    input_path = cfg['input']
+    model_path = cfg['model']
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input video not found: {input_path}")
+
+    if not os.path.exists(model_path):
+        base = os.path.splitext(model_path)[0]
+        for fallback in (base + ".onnx", base + ".pt"):
+            if os.path.exists(fallback):
+                print(f"Model not found at {model_path}, falling back to: {fallback}")
+                model_path = fallback
+                cfg['model'] = model_path
+                break
+        else:
+            raise FileNotFoundError(f"Model not found: {model_path}")
+
+    if not cfg.get('output') and not args.output:
+        output_dir, run_number = _get_pet_output_dir(input_path)
+        os.makedirs(output_dir, exist_ok=True)
+        video_basename = os.path.splitext(os.path.basename(input_path))[0] or "video"
+        cfg['output'] = os.path.join(output_dir, f"{video_basename}.mp4")
+        tqdm.write(f"Results directory: {os.path.abspath(output_dir)} (run {run_number})")
+
+    use_compile = cfg.get('inference', {}).get('compile', False)
+    model = load_model(model_path, DEVICE, use_compile=use_compile)
+
+    first_frame_for_setup = None
+    if args.deadzone or args.track_speed:
+        setup_cap = cv2.VideoCapture(cfg['input'])
+        ret_first, first_frame_for_setup = setup_cap.read()
+        setup_cap.release()
+        if not ret_first or first_frame_for_setup is None:
+            first_frame_for_setup = None
+            print("WARNING: Could not read first frame for interactive setup.")
+
+    deadzones = []
+    if args.deadzone:
+        if first_frame_for_setup is not None:
+            print("Deadzone setup: left-click + drag to draw exclusion rectangles on the first frame.")
+            deadzones = _draw_deadzones_interactive(first_frame_for_setup.copy())
+            print(f"{len(deadzones)} deadzone(s) configured.")
+        else:
+            print("WARNING: Could not read first frame for deadzone setup.")
+
+    calibration = {}
+    if args.track_speed:
+        if first_frame_for_setup is not None:
+            print("Speed setup: draw the full 52 ft bus-stop stretch on the first frame.")
+            calibration = _draw_measure_line_interactive(first_frame_for_setup.copy()) or {}
+            if calibration:
+                print(f"Speed calibration configured at {calibration['feet_per_pixel']:.6f} ft/pixel.")
+            else:
+                print("WARNING: Speed calibration cancelled or invalid. Speed tracking disabled.")
+        else:
+            print("WARNING: Could not read first frame for speed setup. Speed tracking disabled.")
+
+    process_video(
+        input_video_path=cfg['input'],
+        output_video_path=cfg['output'],
+        model=model,
+        cfg=cfg,
+        device=DEVICE,
+        disable_display=not args.display,
+        grid_size=args.grid_size,
+        max_pet_time=args.max_pet_time,
+        use_neighbors=not args.no_neighbors,
+        output_csv_path=args.csv,
+        output_heatmap_path=args.heatmap,
+        show_grid=args.show_grid,
+        single_cell_mode=args.no_grid,
+        deadzones=deadzones,
+        show_deadzones=args.show_deadzones,
+        parallel_angle_tolerance=args.parallel_angle_tolerance,
+        trajectory_history=args.trajectory_history,
+        track_speed=args.track_speed and bool(calibration),
+        speed_unit=args.speed_unit,
+        hide_speed_overlay=args.hide_speed_overlay,
+        calibration=calibration,
     )
 
 
