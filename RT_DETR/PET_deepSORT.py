@@ -37,6 +37,7 @@ except ImportError:
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DEFAULT_MODEL_PATH = './pdx_finetuned_rtdetr.onnx'
+DEFAULT_NON_PET_SECONDS = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +605,32 @@ def _pet_bin_label(pet_seconds):
     return "5+s"
 
 
+def _pet_bin_risk(pet_seconds):
+    """Map PET seconds to a discrete risk level for binned step plots."""
+    if pet_seconds is None:
+        return None
+    if pet_seconds < 1.5:
+        return 1.0
+    if pet_seconds < 3.0:
+        return 0.75
+    if pet_seconds < 5.0:
+        return 0.5
+    return 0.25
+
+
+def _pet_bin_plot_level(pet_seconds):
+    """Map PET seconds to a discrete plot level; 0 is reserved for no PET."""
+    if pet_seconds is None:
+        return None
+    if pet_seconds < 1.5:
+        return 4
+    if pet_seconds < 3.0:
+        return 3
+    if pet_seconds < 5.0:
+        return 2
+    return 1
+
+
 def _track_anchor_point(tlbr):
     """Use bottom-center as the ground-contact proxy for trajectory and speed."""
     x1, y1, x2, y2 = tlbr
@@ -740,6 +767,29 @@ def _recent_heading_vector_from_points(points):
     return None
 
 
+def _buffered_heading_vector_from_points(points, frame_window=None):
+    """Estimate movement over the newest buffered span of trajectory points."""
+    points_list = list(points)
+    if len(points_list) < 2:
+        return None
+    newest_frame, newest_point = points_list[-1]
+    min_frame = None if frame_window is None else newest_frame - max(1, int(frame_window))
+    candidates = points_list[:-1]
+    if min_frame is not None:
+        candidates = [p for p in candidates if p[0] >= min_frame]
+    if not candidates:
+        candidates = points_list[:-1]
+    for older_frame, older_point in candidates:
+        frame_delta = newest_frame - older_frame
+        if frame_delta <= 0:
+            continue
+        dx = float(newest_point[0] - older_point[0])
+        dy = float(newest_point[1] - older_point[1])
+        if math.hypot(dx, dy) >= 1e-6:
+            return (dx, dy)
+    return _recent_heading_vector_from_points(points_list)
+
+
 def _angle_delta_degrees(vec_a, vec_b):
     """Return the unsigned angle between two vectors in degrees."""
     if vec_a is None or vec_b is None:
@@ -760,6 +810,16 @@ def _is_opposing_direction(angle_delta_degrees, tolerance_degrees):
     if angle_delta_degrees is None:
         return False
     return abs(180.0 - angle_delta_degrees) <= tolerance_degrees
+
+
+def _is_collinear_direction(angle_delta_degrees, tolerance_degrees):
+    """Return True for same- or opposite-direction headings within tolerance."""
+    if angle_delta_degrees is None:
+        return True
+    return (
+        angle_delta_degrees <= tolerance_degrees
+        or abs(180.0 - angle_delta_degrees) <= tolerance_degrees
+    )
 
 
 def _opposing_motion_relation(points_a, points_b, vec_a, vec_b):
@@ -805,6 +865,80 @@ def _estimate_speed_ft_per_sec(points, fps):
         return None
     dist_pixels = math.hypot(point_b[0] - point_a[0], point_b[1] - point_a[1])
     return (dist_pixels / frame_delta) * fps
+
+
+def _transform_point_homography(point, H):
+    """Map a single image-space point through a homography matrix."""
+    if point is None or H is None:
+        return None
+    try:
+        x, y = float(point[0]), float(point[1])
+        H_arr = np.asarray(H, dtype=np.float64)
+        vec = H_arr @ np.array([x, y, 1.0], dtype=np.float64)
+        if abs(vec[2]) < 1e-9:
+            return None
+        return (float(vec[0] / vec[2]), float(vec[1] / vec[2]))
+    except Exception:
+        return None
+
+
+def _point_distance(a, b):
+    """Return Euclidean distance between two points, or None for invalid points."""
+    if a is None or b is None:
+        return None
+    return float(math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1])))
+
+
+def _build_speed_context(calibration, requested_speed_space, warp_H, known_length_ft=52.0):
+    """
+    Resolve speed estimation space and scale.
+
+    Returns (context, warning). context is None when speed should be disabled.
+    """
+    if not calibration:
+        return None, "speed tracking enabled but calibration unavailable. Continuing without speed output."
+
+    requested = (requested_speed_space or "auto").lower()
+    if requested not in {"auto", "warp", "image"}:
+        requested = "auto"
+
+    image_length = calibration.get("length_pixels")
+    image_fpp = calibration.get("feet_per_pixel")
+    if not image_length or image_length < 1e-6 or not image_fpp:
+        return None, "speed calibration is invalid. Continuing without speed output."
+
+    def _image_context():
+        return {
+            "space": "image",
+            "feet_per_pixel": float(image_fpp),
+            "calibration_length_pixels": float(image_length),
+            "transform": None,
+        }
+
+    if requested == "image":
+        return _image_context(), None
+
+    if warp_H is None:
+        if requested == "warp":
+            return None, "speed-space=warp requested but homography is unavailable. Continuing without speed output."
+        return _image_context(), "speed-space=auto could not find a valid homography; falling back to image-space speed."
+
+    start_warp = _transform_point_homography(calibration.get("start"), warp_H)
+    end_warp = _transform_point_homography(calibration.get("end"), warp_H)
+    warp_length = _point_distance(start_warp, end_warp)
+    if warp_length is None or warp_length < 1e-6:
+        if requested == "warp":
+            return None, "speed-space=warp could not transform the calibration line. Continuing without speed output."
+        return _image_context(), "speed-space=auto could not transform the calibration line; falling back to image-space speed."
+
+    return {
+        "space": "warp",
+        "feet_per_pixel": float(known_length_ft) / float(warp_length),
+        "calibration_length_pixels": float(warp_length),
+        "transform": warp_H,
+        "calibration_start": start_warp,
+        "calibration_end": end_warp,
+    }, None
 
 
 def _format_speed_label(speed_value, speed_unit):
@@ -1754,6 +1888,7 @@ def process_video(
     speed_unit="mph",
     hide_speed_overlay=False,
     speed_smoothing_window=5,
+    speed_space="auto",
     calibration=None,
     show_direction_lines=False,
 ):
@@ -1793,18 +1928,17 @@ def process_video(
     warp_cfg = pass_cfg.get('warp', {})
     warp_enabled = warp_cfg.get('enabled', False)
     warp_H = warp_H_inv = warp_dst_size = None
-    warp_conf = warp_imgsz = None
-    if warp_enabled:
-        warp_src = warp_cfg.get('src_points')
-        warp_dst_size = warp_cfg.get('dst_size')
-        warp_conf = warp_cfg.get('confidence') or None
-        warp_imgsz = warp_cfg.get('imgsz', 0) or None
-        if warp_src and warp_dst_size and len(warp_src) == 4:
-            warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+    warp_conf = warp_cfg.get('confidence') or None
+    warp_imgsz = warp_cfg.get('imgsz', 0) or None
+    warp_src = warp_cfg.get('src_points')
+    warp_dst_size = warp_cfg.get('dst_size')
+    if warp_src and warp_dst_size and len(warp_src) == 4:
+        warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+        if warp_enabled:
             print(f"Warp pass enabled: {warp_src} -> {warp_dst_size}")
-        else:
-            print("WARNING: warp pass enabled but src_points/dst_size not configured. Warp pass disabled.")
-            warp_enabled = False
+    elif warp_enabled:
+        print("WARNING: warp pass enabled but src_points/dst_size not configured. Warp pass disabled.")
+        warp_enabled = False
 
     nms_iou = nms_cfg.get('hard_iou', 0.45)
     nms_containment = nms_cfg.get('containment_fraction', 0.8)
@@ -1848,13 +1982,23 @@ def process_video(
     _sc_active = bool(single_cell_mode and selected_cell is not None)
     region_neighbors_enabled = bool(use_neighbors and not _sc_active)
     history_frames = max(int(max_pet_time), int(trajectory_history))
-    speed_feet_per_pixel = calibration.get("feet_per_pixel") if track_speed else None
+    speed_context = None
+    speed_feet_per_pixel = None
+    active_speed_space = None
 
-    if track_speed and speed_feet_per_pixel:
-        print(f"Speed calibration active: 52 ft / {calibration['length_pixels']:.1f}px")
-    elif track_speed:
-        print("WARNING: speed tracking enabled but calibration unavailable. Continuing without speed output.")
-        track_speed = False
+    if track_speed:
+        speed_context, speed_warning = _build_speed_context(calibration, speed_space, warp_H)
+        if speed_warning:
+            print(f"WARNING: {speed_warning}")
+        if speed_context:
+            active_speed_space = speed_context["space"]
+            speed_feet_per_pixel = speed_context["feet_per_pixel"]
+            print(
+                f"Speed calibration active ({active_speed_space}): "
+                f"52 ft / {speed_context['calibration_length_pixels']:.1f}px"
+            )
+        else:
+            track_speed = False
 
     if DeepSort is None:
         raise RuntimeError("deep_sort_realtime is not installed. Install it with: pip install deep-sort-realtime")
@@ -1897,6 +2041,8 @@ def process_video(
     conflict_events = []
     cell_pet_values = defaultdict(list)
     frame_to_pets = defaultdict(list)
+    frame_to_pet_bin_levels = defaultdict(list)
+    frame_to_pet_bin_risks = defaultdict(list)
     display_available = not disable_display
     _cached_tile_dets = []
 
@@ -1917,6 +2063,7 @@ def process_video(
     cid_a, cid_b = (sorted_cids[0], sorted_cids[1]) if len(sorted_cids) >= 2 else (None, None)
     pbar = tqdm(total=total_frames if total_frames > 0 else None, unit="frame", desc="PET analysis")
     frame_count = 0
+    speed_point_histories = defaultdict(deque)
 
     try:
         while True:
@@ -2032,7 +2179,14 @@ def process_video(
 
                     speed_ft_per_sec = None
                     if track_speed and speed_feet_per_pixel:
-                        pixel_speed = _estimate_speed_ft_per_sec(history, fps)
+                        speed_point = anchor
+                        if active_speed_space == "warp":
+                            speed_point = _transform_point_homography(anchor, speed_context.get("transform"))
+                        speed_history = speed_point_histories[(cid, track_id)]
+                        if speed_point is not None:
+                            _append_point_if_new(speed_history, frame_count, speed_point)
+                            _prune_points(speed_history, frame_count - history_frames)
+                        pixel_speed = _estimate_speed_ft_per_sec(speed_history, fps)
                         if pixel_speed is not None:
                             speed_ft_per_sec = pixel_speed * speed_feet_per_pixel
                             track_speed_histories[(cid, track_id)].append(speed_ft_per_sec)
@@ -2158,16 +2312,18 @@ def process_video(
                             if not intersects:
                                 continue
 
-                            heading_a = _recent_heading_vector_from_points(visit_a["points"])
-                            heading_b = _recent_heading_vector_from_points(visit_b["points"])
+                            heading_a = _buffered_heading_vector_from_points(visit_a["points"], trajectory_history)
+                            heading_b = _buffered_heading_vector_from_points(visit_b["points"], trajectory_history)
                             angle_delta = _angle_delta_degrees(heading_a, heading_b)
-                            if not _is_opposing_direction(angle_delta, parallel_angle_tolerance):
+                            if _is_collinear_direction(angle_delta, parallel_angle_tolerance):
                                 continue
                             motion_relation = _opposing_motion_relation(
                                 visit_a["points"], visit_b["points"], heading_a, heading_b
                             )
 
                             pet_bin = None if overlap else _pet_bin_label(pet_seconds)
+                            pet_bin_risk = None if overlap else _pet_bin_risk(pet_seconds)
+                            pet_bin_level = None if overlap else _pet_bin_plot_level(pet_seconds)
                             name_a = class_map[cid_a]['name']
                             name_b = class_map[cid_b]['name']
                             speed_a_ft = track_speeds_ft.get((cid_a, visit_a["track_id"])) if track_speed else None
@@ -2181,6 +2337,8 @@ def process_video(
                                 'pet_frames': int(pet_frames),
                                 'pet_seconds': round(pet_seconds, 3),
                                 'pet_bin': pet_bin,
+                                'pet_bin_risk': pet_bin_risk,
+                                'pet_bin_level': pet_bin_level,
                                 'pet_undefined_overlap': overlap,
                                 'signed_pet_frames': int(signed_pet_frames),
                                 'signed_pet_seconds': round(signed_pet_seconds, 3),
@@ -2194,10 +2352,12 @@ def process_video(
                                 'intersection_x': round(intersection_point[0], 3) if intersection_point else None,
                                 'intersection_y': round(intersection_point[1], 3) if intersection_point else None,
                                 'trajectory_angle_delta_degrees': round(angle_delta, 3) if angle_delta is not None else None,
-                                'opposing_angle_tolerance_degrees': float(parallel_angle_tolerance),
+                                'collinear_angle_tolerance_degrees': float(parallel_angle_tolerance),
                                 'opposing_motion_relation': motion_relation,
                                 'direction_filter_passed': True,
                                 'speed_tracking_enabled': bool(track_speed),
+                                'speed_space': active_speed_space if track_speed else None,
+                                'speed_feet_per_pixel': round(speed_feet_per_pixel, 8) if speed_feet_per_pixel is not None else None,
                                 f'{name_a.lower()}_speed_ft_per_s': round(speed_a_ft, 3) if speed_a_ft is not None else None,
                                 f'{name_b.lower()}_speed_ft_per_s': round(speed_b_ft, 3) if speed_b_ft is not None else None,
                                 f'{name_a.lower()}_speed_{speed_key}': round(_speed_to_unit(speed_a_ft, speed_unit), 3) if speed_a_ft is not None else None,
@@ -2210,6 +2370,8 @@ def process_video(
 
                             if not overlap:
                                 frame_to_pets[frame_count].append(pet_seconds)
+                                frame_to_pet_bin_levels[frame_count].append(pet_bin_level)
+                                frame_to_pet_bin_risks[frame_count].append(pet_bin_risk)
                                 cell_pet_values[cell].append(pet_seconds)
                                 if _sc_active and cell == selected_cell:
                                     _sc_last_pet_secs = pet_seconds
@@ -2320,7 +2482,7 @@ def process_video(
                         _draw_direction_arrow(
                             annotated_frame,
                             tlbr,
-                            _recent_heading_vector_from_points(track_histories[(cid, track_id)]),
+                            _buffered_heading_vector_from_points(track_histories[(cid, track_id)], trajectory_history),
                             color,
                         )
                     conf_val = track.det_conf
@@ -2456,40 +2618,54 @@ def process_video(
             cv2.imwrite(output_heatmap_path, heatmap_img)
 
     output_plot_path = base + "_PET_over_time.png"
-    if frame_to_pets:
+    if frame_count > 0:
         frames_all = np.arange(frame_count, dtype=int)
         time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
-        avg_pet_arr = np.full_like(time_sec_arr, np.nan, dtype=float)
+        pet_seconds_arr = np.full_like(time_sec_arr, DEFAULT_NON_PET_SECONDS, dtype=float)
         for frame_idx, vals in frame_to_pets.items():
             if 0 <= frame_idx < frame_count and vals:
-                avg_pet_arr[frame_idx] = np.mean(vals)
+                pet_seconds_arr[frame_idx] = min(DEFAULT_NON_PET_SECONDS, min(vals))
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(time_sec_arr, avg_pet_arr, color="steelblue", linewidth=1)
-        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-        ax.set_ylim(0, None)
+        ax.step(time_sec_arr, pet_seconds_arr, where="post", color="steelblue", linewidth=1.5)
+        event_mask = pet_seconds_arr < DEFAULT_NON_PET_SECONDS
+        if np.any(event_mask):
+            ax.scatter(time_sec_arr[event_mask], pet_seconds_arr[event_mask], color="steelblue", s=12, zorder=3)
+        ax.axhline(DEFAULT_NON_PET_SECONDS, color="gray", linestyle="--", linewidth=0.8)
+        ax.axhspan(0, 1.5, color="crimson", alpha=0.08)
+        ax.axhspan(1.5, 3.0, color="orange", alpha=0.08)
+        ax.axhspan(3.0, 5.0, color="gold", alpha=0.08)
+        ax.axhspan(5.0, DEFAULT_NON_PET_SECONDS, color="green", alpha=0.05)
+        ax.set_ylim(0, DEFAULT_NON_PET_SECONDS + 0.5)
+        ax.set_yticks([0, 1.5, 3.0, 5.0, DEFAULT_NON_PET_SECONDS])
+        ax.set_yticklabels(["0", "1.5", "3", "5", "Normal/10"])
         ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Average PET (s)")
-        ax.set_title("Average PET over time (lower = more critical)")
+        ax.set_ylabel("PET (s)")
+        ax.set_title("PET over time (normal/no PET = 10s; lower = more critical)")
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         fig.savefig(output_plot_path, dpi=150)
         plt.close(fig)
 
     output_risk_plot_path = base + "_Risk_PET_over_time.png"
-    if frame_to_pets:
-        frames_sorted = sorted(frame_to_pets.keys())
-        time_sec_arr = np.array(frames_sorted, dtype=float) / fps if fps > 0 else np.array(frames_sorted)
-        risk_per_frame = np.array([
-            np.mean([1.0 / (1.0 + abs(p)) for p in frame_to_pets[frame_idx]])
-            for frame_idx in frames_sorted
-        ])
+    if frame_count > 0:
+        frames_all = np.arange(frame_count, dtype=int)
+        time_sec_arr = frames_all.astype(float) / fps if fps > 0 else frames_all.astype(float)
+        risk_per_frame = np.zeros_like(time_sec_arr, dtype=float)
+        for frame_idx, vals in frame_to_pet_bin_risks.items():
+            if 0 <= frame_idx < frame_count and vals:
+                risk_per_frame[frame_idx] = max(r for r in vals if r is not None)
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(time_sec_arr, risk_per_frame, color="crimson", linewidth=1)
+        ax.step(time_sec_arr, risk_per_frame, where="post", color="crimson", linewidth=1.5)
+        event_mask = risk_per_frame > 0
+        if np.any(event_mask):
+            ax.scatter(time_sec_arr[event_mask], risk_per_frame[event_mask], color="crimson", s=12, zorder=3)
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax.set_ylim(0, 1.05)
+        ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_yticklabels(["Normal", "5+s", "3-5s", "1.5-3s", "0-1.5s"])
         ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Risk 1/(1+PET)")
-        ax.set_title("Risk over time (higher = lower PET = more critical)")
+        ax.set_ylabel("Binned PET risk")
+        ax.set_title("Binned PET risk over time (higher = lower PET = more critical)")
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         fig.savefig(output_risk_plot_path, dpi=150)
@@ -2498,7 +2674,7 @@ def process_video(
     tqdm.write(f"Video:   {os.path.abspath(output_video_path)}")
     tqdm.write(f"CSV:     {os.path.abspath(output_csv_path)}")
     tqdm.write(f"Heatmap: {os.path.abspath(output_heatmap_path)}")
-    if frame_to_pets:
+    if frame_count > 0:
         tqdm.write(f"Plot:    {os.path.abspath(output_plot_path)}")
         tqdm.write(f"Risk:    {os.path.abspath(output_risk_plot_path)}")
 
@@ -2524,13 +2700,15 @@ def main():
     parser.add_argument("--deadzone", action="store_true", help="Interactively draw rectangular deadzones on the first frame before processing.")
     parser.add_argument("--show-deadzones", action="store_true", help="Render deadzone overlays on the output video / live preview.")
     parser.add_argument("--parallel-angle-tolerance", type=float, default=15.0,
-                        help="Keep PET pairs whose frame-to-frame headings are opposite within this many degrees.")
+                        help="Exclude PET pairs whose buffered headings are within this many degrees of 0 or 180.")
     parser.add_argument("--trajectory-history", type=int, default=15,
                         help="Recent frame history used for trajectory heading/intersection checks.")
     parser.add_argument("--track-speed", action="store_true",
                         help="Prompt for a 52 ft calibration line on the first frame and estimate object speed.")
     parser.add_argument("--speed-unit", choices=["mph", "ft/s"], default="mph",
                         help="Display/export unit for speed outputs.")
+    parser.add_argument("--speed-space", choices=["auto", "warp", "image"], default="auto",
+                        help="Coordinate space for speed estimation: auto uses homography when available.")
     parser.add_argument("--hide-speed-overlay", action="store_true",
                         help="Keep speed in CSV outputs but hide speed labels on the video.")
     parser.add_argument("--show-direction-lines", action="store_true",
@@ -2621,6 +2799,7 @@ def main():
         trajectory_history=args.trajectory_history,
         track_speed=args.track_speed and bool(calibration),
         speed_unit=args.speed_unit,
+        speed_space=args.speed_space,
         hide_speed_overlay=args.hide_speed_overlay,
         calibration=calibration,
         show_direction_lines=args.show_direction_lines,

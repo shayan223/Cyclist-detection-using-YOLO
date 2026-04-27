@@ -3,6 +3,9 @@ import pathlib
 import sys
 import types
 import unittest
+from collections import deque
+
+import numpy as np
 
 
 def _install_test_stubs():
@@ -42,6 +45,9 @@ SPEC.loader.exec_module(PET)
 
 
 class PetHelperTests(unittest.TestCase):
+    def test_non_pet_default_seconds_is_high(self):
+        self.assertEqual(PET.DEFAULT_NON_PET_SECONDS, 10.0)
+
     def test_pet_bin_thresholds(self):
         self.assertEqual(PET._pet_bin_label(0.0), "0-1.5s")
         self.assertEqual(PET._pet_bin_label(1.4999), "0-1.5s")
@@ -49,15 +55,56 @@ class PetHelperTests(unittest.TestCase):
         self.assertEqual(PET._pet_bin_label(3.0), "3-5s")
         self.assertEqual(PET._pet_bin_label(5.0), "5+s")
 
+    def test_pet_bin_risk_thresholds(self):
+        self.assertEqual(PET._pet_bin_risk(0.0), 1.0)
+        self.assertEqual(PET._pet_bin_risk(1.4999), 1.0)
+        self.assertEqual(PET._pet_bin_risk(1.5), 0.75)
+        self.assertEqual(PET._pet_bin_risk(3.0), 0.5)
+        self.assertEqual(PET._pet_bin_risk(5.0), 0.25)
+
+    def test_pet_bin_plot_level_thresholds(self):
+        self.assertEqual(PET._pet_bin_plot_level(0.0), 4)
+        self.assertEqual(PET._pet_bin_plot_level(1.4999), 4)
+        self.assertEqual(PET._pet_bin_plot_level(1.5), 3)
+        self.assertEqual(PET._pet_bin_plot_level(3.0), 2)
+        self.assertEqual(PET._pet_bin_plot_level(5.0), 1)
+
     def test_opposing_filter_keeps_only_opposite_direction(self):
         self.assertFalse(PET._is_opposing_direction(5.0, 15.0))
         self.assertTrue(PET._is_opposing_direction(175.0, 15.0))
         self.assertTrue(PET._is_opposing_direction(180.0, 15.0))
         self.assertFalse(PET._is_opposing_direction(90.0, 15.0))
 
+    def test_collinear_filter_catches_same_and_opposite_direction(self):
+        self.assertTrue(PET._is_collinear_direction(5.0, 15.0))
+        self.assertTrue(PET._is_collinear_direction(175.0, 15.0))
+        self.assertFalse(PET._is_collinear_direction(90.0, 15.0))
+
     def test_recent_heading_uses_newest_distinct_points(self):
         points = [(0, (0.0, 0.0)), (10, (50.0, 0.0)), (11, (50.0, 5.0))]
         self.assertEqual(PET._recent_heading_vector_from_points(points), (0.0, 5.0))
+
+    def test_buffered_heading_uses_average_over_recent_window(self):
+        points = [(0, (0.0, 0.0)), (10, (10.0, 0.0)), (20, (10.0, 10.0))]
+        self.assertEqual(PET._buffered_heading_vector_from_points(points, frame_window=15), (0.0, 10.0))
+        self.assertEqual(PET._buffered_heading_vector_from_points(points, frame_window=25), (10.0, 10.0))
+
+    def test_buffered_heading_accepts_deque_history(self):
+        points = deque([(0, (0.0, 0.0)), (10, (10.0, 0.0)), (20, (10.0, 10.0))])
+        self.assertEqual(PET._buffered_heading_vector_from_points(points, frame_window=15), (0.0, 10.0))
+
+    def test_perpendicular_crossing_is_outside_collinear_buffer(self):
+        biker = PET._buffered_heading_vector_from_points(
+            [(0, (5.0, 10.0)), (5, (5.0, 0.0))],
+            frame_window=15,
+        )
+        pedestrian = PET._buffered_heading_vector_from_points(
+            [(0, (0.0, 5.0)), (5, (10.0, 5.0))],
+            frame_window=15,
+        )
+        angle_delta = PET._angle_delta_degrees(biker, pedestrian)
+        self.assertAlmostEqual(angle_delta, 90.0, places=4)
+        self.assertFalse(PET._is_collinear_direction(angle_delta, 15.0))
 
     def test_opposing_motion_relation_labels_toward_and_away(self):
         points_a_toward = [(0, (0.0, 0.0)), (1, (1.0, 0.0))]
@@ -95,6 +142,59 @@ class PetHelperTests(unittest.TestCase):
         self.assertAlmostEqual(pixel_speed, 60.0, places=4)
         self.assertAlmostEqual(PET._speed_to_unit(10.0, "mph"), 6.81818, places=4)
         self.assertAlmostEqual(PET._speed_to_unit(10.0, "ft/s"), 10.0, places=4)
+
+    def test_identity_homography_preserves_speed_math(self):
+        H = np.eye(3)
+        points = [
+            (0, PET._transform_point_homography((0.0, 0.0), H)),
+            (5, PET._transform_point_homography((10.0, 0.0), H)),
+        ]
+        self.assertAlmostEqual(PET._estimate_speed_ft_per_sec(points, fps=30), 60.0, places=4)
+
+    def test_scaled_homography_changes_pixel_speed(self):
+        H = np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+        points = [
+            (0, PET._transform_point_homography((0.0, 0.0), H)),
+            (5, PET._transform_point_homography((10.0, 0.0), H)),
+        ]
+        self.assertAlmostEqual(PET._estimate_speed_ft_per_sec(points, fps=30), 120.0, places=4)
+
+    def test_warp_calibration_line_sets_feet_per_pixel_in_warp_space(self):
+        calibration = {
+            "start": (0.0, 0.0),
+            "end": (10.0, 0.0),
+            "length_pixels": 10.0,
+            "feet_per_pixel": 5.2,
+        }
+        H = np.array([[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+        context, warning = PET._build_speed_context(calibration, "warp", H)
+        self.assertIsNone(warning)
+        self.assertEqual(context["space"], "warp")
+        self.assertAlmostEqual(context["calibration_length_pixels"], 20.0, places=4)
+        self.assertAlmostEqual(context["feet_per_pixel"], 2.6, places=4)
+
+    def test_speed_context_auto_falls_back_to_image_without_homography(self):
+        calibration = {
+            "start": (0.0, 0.0),
+            "end": (10.0, 0.0),
+            "length_pixels": 10.0,
+            "feet_per_pixel": 5.2,
+        }
+        context, warning = PET._build_speed_context(calibration, "auto", None)
+        self.assertEqual(context["space"], "image")
+        self.assertAlmostEqual(context["feet_per_pixel"], 5.2, places=4)
+        self.assertIn("falling back", warning)
+
+    def test_speed_context_warp_disables_without_homography(self):
+        calibration = {
+            "start": (0.0, 0.0),
+            "end": (10.0, 0.0),
+            "length_pixels": 10.0,
+            "feet_per_pixel": 5.2,
+        }
+        context, warning = PET._build_speed_context(calibration, "warp", None)
+        self.assertIsNone(context)
+        self.assertIn("homography is unavailable", warning)
 
 
 if __name__ == "__main__":
