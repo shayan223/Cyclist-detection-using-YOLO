@@ -723,6 +723,23 @@ def _heading_vector_from_points(points):
     return (dx, dy)
 
 
+def _recent_heading_vector_from_points(points):
+    """Estimate frame-to-frame movement from the newest distinct point pair."""
+    if len(points) < 2:
+        return None
+    newest = points[-1]
+    for older in reversed(list(points)[:-1]):
+        frame_delta = newest[0] - older[0]
+        if frame_delta <= 0:
+            continue
+        dx = float(newest[1][0] - older[1][0])
+        dy = float(newest[1][1] - older[1][1])
+        norm = math.hypot(dx, dy)
+        if norm >= 1e-6:
+            return (dx, dy)
+    return None
+
+
 def _angle_delta_degrees(vec_a, vec_b):
     """Return the unsigned angle between two vectors in degrees."""
     if vec_a is None or vec_b is None:
@@ -738,14 +755,30 @@ def _angle_delta_degrees(vec_a, vec_b):
     return float(math.degrees(math.acos(cosine)))
 
 
-def _is_near_parallel(angle_delta_degrees, tolerance_degrees):
-    """Treat both same-direction and opposite-direction motion as near-parallel."""
+def _is_opposing_direction(angle_delta_degrees, tolerance_degrees):
+    """Return True when headings are opposite within the configured tolerance."""
     if angle_delta_degrees is None:
-        return True
-    return (
-        angle_delta_degrees <= tolerance_degrees
-        or abs(180.0 - angle_delta_degrees) <= tolerance_degrees
-    )
+        return False
+    return abs(180.0 - angle_delta_degrees) <= tolerance_degrees
+
+
+def _opposing_motion_relation(points_a, points_b, vec_a, vec_b):
+    """Classify opposite-direction motion as toward, away, or ambiguous."""
+    if len(points_a) < 1 or len(points_b) < 1 or vec_a is None or vec_b is None:
+        return "unknown"
+    ax, ay = points_a[-1][1]
+    bx, by = points_b[-1][1]
+    rel_ab = (float(bx - ax), float(by - ay))
+    rel_len = math.hypot(rel_ab[0], rel_ab[1])
+    if rel_len < 1e-6:
+        return "unknown"
+    a_toward_b = vec_a[0] * rel_ab[0] + vec_a[1] * rel_ab[1]
+    b_toward_a = vec_b[0] * -rel_ab[0] + vec_b[1] * -rel_ab[1]
+    if a_toward_b > 0 and b_toward_a > 0:
+        return "toward"
+    if a_toward_b < 0 and b_toward_a < 0:
+        return "away"
+    return "opposing"
 
 
 def _speed_to_unit(speed_ft_per_sec, speed_unit):
@@ -780,6 +813,26 @@ def _format_speed_label(speed_value, speed_unit):
         return None
     decimals = 1 if speed_unit == "mph" else 2
     return f"{speed_value:.{decimals}f} { _speed_unit_suffix(speed_unit) }"
+
+
+def _draw_direction_arrow(frame, tlbr, vector, color):
+    """Draw a short direction arrow from the bbox center."""
+    if vector is None:
+        return
+    x1, y1, x2, y2 = map(float, tlbr)
+    dx, dy = vector
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:
+        return
+    cx = int((x1 + x2) / 2.0)
+    cy = int((y1 + y2) / 2.0)
+    box_diag = math.hypot(x2 - x1, y2 - y1)
+    arrow_len = max(18.0, min(60.0, box_diag * 0.35))
+    end = (
+        int(round(cx + (dx / norm) * arrow_len)),
+        int(round(cy + (dy / norm) * arrow_len)),
+    )
+    cv2.arrowedLine(frame, (cx, cy), end, color, 2, tipLength=0.35)
 
 
 def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration line"):
@@ -1702,6 +1755,7 @@ def process_video(
     hide_speed_overlay=False,
     speed_smoothing_window=5,
     calibration=None,
+    show_direction_lines=False,
 ):
     """Process video for trajectory-aware PET conflict analysis."""
     deadzones = deadzones or []
@@ -2104,12 +2158,14 @@ def process_video(
                             if not intersects:
                                 continue
 
-                            angle_delta = _angle_delta_degrees(
-                                _heading_vector_from_points(visit_a["points"]),
-                                _heading_vector_from_points(visit_b["points"]),
-                            )
-                            if _is_near_parallel(angle_delta, parallel_angle_tolerance):
+                            heading_a = _recent_heading_vector_from_points(visit_a["points"])
+                            heading_b = _recent_heading_vector_from_points(visit_b["points"])
+                            angle_delta = _angle_delta_degrees(heading_a, heading_b)
+                            if not _is_opposing_direction(angle_delta, parallel_angle_tolerance):
                                 continue
+                            motion_relation = _opposing_motion_relation(
+                                visit_a["points"], visit_b["points"], heading_a, heading_b
+                            )
 
                             pet_bin = None if overlap else _pet_bin_label(pet_seconds)
                             name_a = class_map[cid_a]['name']
@@ -2138,8 +2194,9 @@ def process_video(
                                 'intersection_x': round(intersection_point[0], 3) if intersection_point else None,
                                 'intersection_y': round(intersection_point[1], 3) if intersection_point else None,
                                 'trajectory_angle_delta_degrees': round(angle_delta, 3) if angle_delta is not None else None,
-                                'parallel_angle_tolerance_degrees': float(parallel_angle_tolerance),
-                                'parallel_filtered': False,
+                                'opposing_angle_tolerance_degrees': float(parallel_angle_tolerance),
+                                'opposing_motion_relation': motion_relation,
+                                'direction_filter_passed': True,
                                 'speed_tracking_enabled': bool(track_speed),
                                 f'{name_a.lower()}_speed_ft_per_s': round(speed_a_ft, 3) if speed_a_ft is not None else None,
                                 f'{name_b.lower()}_speed_ft_per_s': round(speed_b_ft, 3) if speed_b_ft is not None else None,
@@ -2259,6 +2316,13 @@ def process_video(
                     tlbr = track.to_tlbr()
                     x1, y1, x2, y2 = map(int, tlbr)
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    if show_direction_lines:
+                        _draw_direction_arrow(
+                            annotated_frame,
+                            tlbr,
+                            _recent_heading_vector_from_points(track_histories[(cid, track_id)]),
+                            color,
+                        )
                     conf_val = track.det_conf
                     conf_str = f" {conf_val:.2f}" if conf_val is not None else ""
                     label = f"{prefix}#{track_id}{conf_str}"
@@ -2460,7 +2524,7 @@ def main():
     parser.add_argument("--deadzone", action="store_true", help="Interactively draw rectangular deadzones on the first frame before processing.")
     parser.add_argument("--show-deadzones", action="store_true", help="Render deadzone overlays on the output video / live preview.")
     parser.add_argument("--parallel-angle-tolerance", type=float, default=15.0,
-                        help="Exclude PET pairs when the trajectory angle is within this many degrees of 0 or 180.")
+                        help="Keep PET pairs whose frame-to-frame headings are opposite within this many degrees.")
     parser.add_argument("--trajectory-history", type=int, default=15,
                         help="Recent frame history used for trajectory heading/intersection checks.")
     parser.add_argument("--track-speed", action="store_true",
@@ -2469,6 +2533,8 @@ def main():
                         help="Display/export unit for speed outputs.")
     parser.add_argument("--hide-speed-overlay", action="store_true",
                         help="Keep speed in CSV outputs but hide speed labels on the video.")
+    parser.add_argument("--show-direction-lines", action="store_true",
+                        help="Draw short movement direction arrows from each bounding-box center.")
 
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -2557,6 +2623,7 @@ def main():
         speed_unit=args.speed_unit,
         hide_speed_overlay=args.hide_speed_overlay,
         calibration=calibration,
+        show_direction_lines=args.show_direction_lines,
     )
 
 

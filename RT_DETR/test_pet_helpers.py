@@ -25,6 +25,12 @@ def _install_test_stubs():
     ultralytics_stub.RTDETR = _DummyRTDETR
     sys.modules.setdefault("ultralytics", ultralytics_stub)
 
+    cv2_stub = types.ModuleType("cv2")
+    cv2_stub.FONT_HERSHEY_SIMPLEX = 0
+    cv2_stub.LINE_AA = 16
+    cv2_stub.arrowedLine = lambda *args, **kwargs: None
+    sys.modules.setdefault("cv2", cv2_stub)
+
 
 _install_test_stubs()
 
@@ -43,10 +49,30 @@ class PetHelperTests(unittest.TestCase):
         self.assertEqual(PET._pet_bin_label(3.0), "3-5s")
         self.assertEqual(PET._pet_bin_label(5.0), "5+s")
 
-    def test_parallel_filter_catches_same_and_opposite_direction(self):
-        self.assertTrue(PET._is_near_parallel(5.0, 15.0))
-        self.assertTrue(PET._is_near_parallel(175.0, 15.0))
-        self.assertFalse(PET._is_near_parallel(90.0, 15.0))
+    def test_opposing_filter_keeps_only_opposite_direction(self):
+        self.assertFalse(PET._is_opposing_direction(5.0, 15.0))
+        self.assertTrue(PET._is_opposing_direction(175.0, 15.0))
+        self.assertTrue(PET._is_opposing_direction(180.0, 15.0))
+        self.assertFalse(PET._is_opposing_direction(90.0, 15.0))
+
+    def test_recent_heading_uses_newest_distinct_points(self):
+        points = [(0, (0.0, 0.0)), (10, (50.0, 0.0)), (11, (50.0, 5.0))]
+        self.assertEqual(PET._recent_heading_vector_from_points(points), (0.0, 5.0))
+
+    def test_opposing_motion_relation_labels_toward_and_away(self):
+        points_a_toward = [(0, (0.0, 0.0)), (1, (1.0, 0.0))]
+        points_b_toward = [(0, (3.0, 0.0)), (1, (2.0, 0.0))]
+        self.assertEqual(
+            PET._opposing_motion_relation(points_a_toward, points_b_toward, (1.0, 0.0), (-1.0, 0.0)),
+            "toward",
+        )
+
+        points_a_away = [(0, (1.0, 0.0)), (1, (0.0, 0.0))]
+        points_b_away = [(0, (2.0, 0.0)), (1, (3.0, 0.0))]
+        self.assertEqual(
+            PET._opposing_motion_relation(points_a_away, points_b_away, (-1.0, 0.0), (1.0, 0.0)),
+            "away",
+        )
 
     def test_polyline_intersection_inside_region(self):
         points_a = [(0, (0.0, 0.0)), (1, (10.0, 10.0))]
