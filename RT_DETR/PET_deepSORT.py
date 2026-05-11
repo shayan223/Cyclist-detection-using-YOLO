@@ -454,6 +454,83 @@ def _draw_deadzones_interactive(frame, window_name="Draw Deadzones"):
     return zones
 
 
+def _draw_polygon_interactive(frame, window_name="Draw Conflict Zone"):
+    """
+    Interactive polygon editor for selecting a PET conflict zone.
+
+    Controls
+    --------
+    Left-click          : add polygon point
+    U                   : undo last point
+    C                   : clear polygon
+    Enter / Space       : confirm polygon with at least 3 points
+    Esc                 : skip (return None)
+    """
+    points = []
+    mouse_pos = None
+
+    def _mouse(event, x, y, flags, param):
+        nonlocal mouse_pos
+        mouse_pos = (x, y)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            points.append((x, y))
+        elif event == cv2.EVENT_MOUSEMOVE:
+            mouse_pos = (x, y)
+
+    instructions = [
+        "Draw conflict zone: left-click points to build polygon",
+        "U: undo   C: clear   Enter/Space: confirm   Esc: skip",
+    ]
+
+    try:
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _mouse)
+
+        while True:
+            img = frame.copy()
+            if points:
+                pts = np.array(points, dtype=np.int32)
+                for idx, pt in enumerate(points):
+                    cv2.circle(img, pt, 4, (0, 255, 255), -1)
+                    cv2.putText(img, str(idx + 1), (pt[0] + 6, pt[1] - 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+                if len(points) >= 2:
+                    cv2.polylines(img, [pts], False, (0, 255, 255), 2)
+                if len(points) >= 3:
+                    overlay = img.copy()
+                    cv2.fillPoly(overlay, [pts], (0, 180, 180))
+                    cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
+                    cv2.polylines(img, [pts], True, (0, 255, 255), 2)
+                elif len(points) >= 1 and mouse_pos is not None:
+                    cv2.line(img, points[-1], mouse_pos, (0, 220, 220), 1)
+
+            for i, txt in enumerate(instructions):
+                y_pos = 22 + i * 24
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, txt, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow(window_name, img)
+
+            key = cv2.waitKey(20) & 0xFF
+            if key in (13, 32) and len(points) >= 3:
+                break
+            if key == 27:
+                points = []
+                break
+            if key == ord('u') and points:
+                points.pop()
+            if key == ord('c'):
+                points = []
+
+        cv2.destroyWindow(window_name)
+    except (cv2.error, Exception) as e:
+        print(f"Conflict zone drawing unavailable: {e}")
+        points = []
+
+    return points if len(points) >= 3 else None
+
+
 # ---------------------------------------------------------------------------
 # PET helpers  (identical to root PET_deepSORT.py)
 # ---------------------------------------------------------------------------
@@ -471,6 +548,67 @@ def _bbox_overlap_cells(bbox_xyxy, width, height, grid_rows, grid_cols):
     for r in range(row_start, row_end + 1):
         for c in range(col_start, col_end + 1):
             cells.add((r, c))
+    return cells
+
+
+def _cell_rect(cell, width, height, grid_rows, grid_cols):
+    """Return the pixel rectangle for one grid cell."""
+    r, c = cell
+    cell_w = width / grid_cols
+    cell_h = height / grid_rows
+    return (
+        float(c * cell_w),
+        float(r * cell_h),
+        float((c + 1) * cell_w),
+        float((r + 1) * cell_h),
+    )
+
+
+def _point_in_polygon(point, polygon):
+    """Return True when point is inside or on a polygon boundary."""
+    x, y = float(point[0]), float(point[1])
+    pts = [(float(px), float(py)) for px, py in polygon]
+    inside = False
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        if _on_segment((x1, y1), (x2, y2), (x, y), eps=1e-6):
+            return True
+        intersects = ((y1 > y) != (y2 > y))
+        if intersects:
+            x_cross = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x_cross >= x:
+                inside = not inside
+    return inside
+
+
+def _rect_overlaps_polygon(rect, polygon):
+    """Inclusive rectangle/polygon overlap test."""
+    x1, y1, x2, y2 = rect
+    rect_pts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    if any(_point_in_polygon(pt, polygon) for pt in rect_pts):
+        return True
+    if any(x1 <= px <= x2 and y1 <= py <= y2 for px, py in polygon):
+        return True
+    rect_edges = list(zip(rect_pts, rect_pts[1:] + rect_pts[:1]))
+    poly_edges = list(zip(polygon, polygon[1:] + polygon[:1]))
+    for a1, a2 in rect_edges:
+        for b1, b2 in poly_edges:
+            if _segment_intersection_point(a1, a2, b1, b2) is not None:
+                return True
+    return False
+
+
+def _conflict_zone_cells_from_polygon(polygon, width, height, grid_rows, grid_cols):
+    """Return grid cells whose rectangles overlap the conflict-zone polygon."""
+    if not polygon or len(polygon) < 3:
+        return None
+    cells = set()
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            if _rect_overlaps_polygon(_cell_rect((r, c), width, height, grid_rows, grid_cols), polygon):
+                cells.add((r, c))
     return cells
 
 
@@ -668,6 +806,13 @@ def _region_rect_from_cells(cells, width, height, grid_rows, grid_cols):
     x2 = (max(cols) + 1) * cell_w
     y2 = (max(rows) + 1) * cell_h
     return (float(x1), float(y1), float(x2), float(y2))
+
+
+def _pet_activation_display_cells(primary_cell, region_cells, conflict_zone_cells=None):
+    """Return grid cells to highlight for a PET activation."""
+    if conflict_zone_cells is None:
+        return {primary_cell}
+    return set(region_cells) & set(conflict_zone_cells)
 
 
 def _point_in_rect(point, rect):
@@ -1882,6 +2027,7 @@ def process_video(
     single_cell_mode=False,
     deadzones=None,
     show_deadzones=False,
+    conflict_zone_polygon=None,
     parallel_angle_tolerance=15.0,
     trajectory_history=15,
     track_speed=False,
@@ -1981,6 +2127,18 @@ def process_video(
     cell_h = height / grid_rows
     _sc_active = bool(single_cell_mode and selected_cell is not None)
     region_neighbors_enabled = bool(use_neighbors and not _sc_active)
+    conflict_zone_cells = _conflict_zone_cells_from_polygon(
+        conflict_zone_polygon, width, height, grid_rows, grid_cols
+    ) if conflict_zone_polygon else None
+    if conflict_zone_polygon and not conflict_zone_cells:
+        print("WARNING: conflict zone did not overlap any grid cells. Falling back to full-grid PET.")
+        conflict_zone_polygon = None
+        conflict_zone_cells = None
+    elif conflict_zone_cells:
+        print(f"Conflict zone active: {len(conflict_zone_cells)} grid cell(s) included for PET.")
+    if _sc_active and conflict_zone_cells is not None and selected_cell not in conflict_zone_cells:
+        print("WARNING: selected single PET cell is outside the conflict zone. Disabling single-cell mode.")
+        _sc_active = False
     history_frames = max(int(max_pet_time), int(trajectory_history))
     speed_context = None
     speed_feet_per_pixel = None
@@ -2211,9 +2369,15 @@ def process_video(
                     for occ_cell in list(occupied_cells_all):
                         cells_with_presence.update(_neighbor_cells(occ_cell[0], occ_cell[1], grid_rows, grid_cols, include_self=True))
             cells_to_update = set(cells_with_presence) | set(active_region_visits.keys()) | set(closed_region_visits.keys())
+            if conflict_zone_cells is not None:
+                cells_to_update &= conflict_zone_cells
 
             for cell in list(cells_to_update):
                 region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
+                if conflict_zone_cells is not None:
+                    region_cells &= conflict_zone_cells
+                    if not region_cells:
+                        continue
                 present_by_class = defaultdict(dict)
                 for cid, snapshots in track_snapshots.items():
                     for track_id, snapshot in snapshots.items():
@@ -2261,8 +2425,14 @@ def process_video(
 
             if cid_a is not None and cid_b is not None:
                 cells_to_check = {selected_cell} if _sc_active else (set(active_region_visits.keys()) | set(closed_region_visits.keys()))
+                if conflict_zone_cells is not None:
+                    cells_to_check &= conflict_zone_cells
                 for cell in sorted(cells_to_check):
                     region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
+                    if conflict_zone_cells is not None:
+                        region_cells &= conflict_zone_cells
+                        if not region_cells:
+                            continue
                     region_rect = _region_rect_from_cells(region_cells, width, height, grid_rows, grid_cols)
                     visits_a = list(closed_region_visits.get(cell, {}).get(cid_a, [])) + list(active_region_visits.get(cell, {}).get(cid_a, {}).values())
                     visits_b = list(closed_region_visits.get(cell, {}).get(cid_b, [])) + list(active_region_visits.get(cell, {}).get(cid_b, {}).values())
@@ -2276,8 +2446,6 @@ def process_video(
                                 visit_a["class_id"], visit_a["track_id"], visit_a["entry_frame"], visit_a.get("exit_frame", -1),
                                 visit_b["class_id"], visit_b["track_id"], visit_b["entry_frame"], visit_b.get("exit_frame", -1),
                             )
-                            if sig in event_signatures:
-                                continue
 
                             end_a = visit_a.get("exit_frame", visit_a["last_frame"])
                             end_b = visit_b.get("exit_frame", visit_b["last_frame"])
@@ -2320,6 +2488,12 @@ def process_video(
                             motion_relation = _opposing_motion_relation(
                                 visit_a["points"], visit_b["points"], heading_a, heading_b
                             )
+
+                            conflict_cells_this_frame.update(
+                                _pet_activation_display_cells(cell, region_cells, conflict_zone_cells)
+                            )
+                            if sig in event_signatures:
+                                continue
 
                             pet_bin = None if overlap else _pet_bin_label(pet_seconds)
                             pet_bin_risk = None if overlap else _pet_bin_risk(pet_seconds)
@@ -2365,7 +2539,6 @@ def process_video(
                             }
                             conflict_events.append(event_row)
                             events_this_frame.append(event_row)
-                            conflict_cells_this_frame.add(cell)
                             event_signatures.add(sig)
 
                             if not overlap:
@@ -2446,6 +2619,20 @@ def process_video(
                     cv2.fillPoly(overlay, [pts], (0, 0, 180))
                     cv2.addWeighted(overlay, 0.25, annotated_frame, 0.75, 0, annotated_frame)
                     cv2.polylines(annotated_frame, [pts], True, (0, 0, 200), 1)
+
+            if conflict_zone_polygon:
+                pts = np.array(conflict_zone_polygon, dtype=np.int32)
+                overlay = annotated_frame.copy()
+                cv2.fillPoly(overlay, [pts], (0, 180, 180))
+                cv2.addWeighted(overlay, 0.18, annotated_frame, 0.82, 0, annotated_frame)
+                cv2.polylines(annotated_frame, [pts], True, (0, 255, 255), 2)
+                if show_grid and conflict_zone_cells:
+                    for zr, zc in conflict_zone_cells:
+                        zx1 = int(zc * cell_w)
+                        zy1 = int(zr * cell_h)
+                        zx2 = int((zc + 1) * cell_w)
+                        zy2 = int((zr + 1) * cell_h)
+                        cv2.rectangle(annotated_frame, (zx1, zy1), (zx2, zy2), (0, 180, 180), 1)
 
             if show_grid:
                 for i in range(1, grid_rows):
@@ -2699,6 +2886,8 @@ def main():
     parser.add_argument("--display", action="store_true", help="Show live preview window.")
     parser.add_argument("--deadzone", action="store_true", help="Interactively draw rectangular deadzones on the first frame before processing.")
     parser.add_argument("--show-deadzones", action="store_true", help="Render deadzone overlays on the output video / live preview.")
+    parser.add_argument("--conflict-zone", action="store_true",
+                        help="Interactively draw a polygon; PET is computed only for grid cells overlapping it.")
     parser.add_argument("--parallel-angle-tolerance", type=float, default=15.0,
                         help="Exclude PET pairs whose buffered headings are within this many degrees of 0 or 180.")
     parser.add_argument("--trajectory-history", type=int, default=15,
@@ -2750,7 +2939,7 @@ def main():
     model = load_model(model_path, DEVICE, use_compile=use_compile)
 
     first_frame_for_setup = None
-    if args.deadzone or args.track_speed:
+    if args.deadzone or args.track_speed or args.conflict_zone:
         setup_cap = cv2.VideoCapture(cfg['input'])
         ret_first, first_frame_for_setup = setup_cap.read()
         setup_cap.release()
@@ -2766,6 +2955,18 @@ def main():
             print(f"{len(deadzones)} deadzone(s) configured.")
         else:
             print("WARNING: Could not read first frame for deadzone setup.")
+
+    conflict_zone_polygon = None
+    if args.conflict_zone:
+        if first_frame_for_setup is not None:
+            print("Conflict zone setup: left-click polygon points on the first frame.")
+            conflict_zone_polygon = _draw_polygon_interactive(first_frame_for_setup.copy())
+            if conflict_zone_polygon:
+                print(f"Conflict zone configured with {len(conflict_zone_polygon)} point(s).")
+            else:
+                print("WARNING: Conflict zone cancelled or invalid. Using full-grid PET.")
+        else:
+            print("WARNING: Could not read first frame for conflict zone setup.")
 
     calibration = {}
     if args.track_speed:
@@ -2795,6 +2996,7 @@ def main():
         single_cell_mode=args.no_grid,
         deadzones=deadzones,
         show_deadzones=args.show_deadzones,
+        conflict_zone_polygon=conflict_zone_polygon,
         parallel_angle_tolerance=args.parallel_angle_tolerance,
         trajectory_history=args.trajectory_history,
         track_speed=args.track_speed and bool(calibration),

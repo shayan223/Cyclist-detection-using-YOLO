@@ -136,6 +136,35 @@ class PetHelperTests(unittest.TestCase):
         self.assertFalse(intersects)
         self.assertIsNone(point)
 
+    def test_conflict_zone_cells_include_partial_overlap(self):
+        polygon = [(5.0, 5.0), (15.0, 5.0), (15.0, 15.0), (5.0, 15.0)]
+        cells = PET._conflict_zone_cells_from_polygon(
+            polygon, width=20, height=20, grid_rows=2, grid_cols=2
+        )
+        self.assertEqual(cells, {(0, 0), (0, 1), (1, 0), (1, 1)})
+
+    def test_conflict_zone_cells_exclude_non_overlapping_cells(self):
+        polygon = [(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0)]
+        cells = PET._conflict_zone_cells_from_polygon(
+            polygon, width=20, height=20, grid_rows=2, grid_cols=2
+        )
+        self.assertEqual(cells, {(0, 0)})
+
+    def test_pet_activation_display_cells_clip_to_conflict_zone(self):
+        region_cells = {(0, 0), (0, 1), (1, 0), (1, 1)}
+        conflict_zone_cells = {(0, 1), (1, 1)}
+        self.assertEqual(
+            PET._pet_activation_display_cells((0, 0), region_cells, conflict_zone_cells),
+            {(0, 1), (1, 1)},
+        )
+
+    def test_pet_activation_display_cells_use_primary_without_conflict_zone(self):
+        region_cells = {(0, 0), (0, 1), (1, 0), (1, 1)}
+        self.assertEqual(
+            PET._pet_activation_display_cells((0, 0), region_cells),
+            {(0, 0)},
+        )
+
     def test_speed_conversion(self):
         history = [(0, (0.0, 0.0)), (5, (10.0, 0.0))]
         pixel_speed = PET._estimate_speed_ft_per_sec(history, fps=30)
