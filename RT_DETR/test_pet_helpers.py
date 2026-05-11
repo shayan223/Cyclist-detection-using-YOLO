@@ -106,6 +106,13 @@ class PetHelperTests(unittest.TestCase):
         self.assertAlmostEqual(angle_delta, 90.0, places=4)
         self.assertFalse(PET._is_collinear_direction(angle_delta, 15.0))
 
+    def test_track_anchor_footprint_stays_inside_bbox(self):
+        self.assertEqual(PET._track_anchor_point((10.0, 20.0, 30.0, 60.0)), (20.0, 60.0))
+        self.assertEqual(
+            PET._track_anchor_footprint((10.0, 20.0, 30.0, 60.0)),
+            (16.0, 52.0, 24.0, 60.0),
+        )
+
     def test_opposing_motion_relation_labels_toward_and_away(self):
         points_a_toward = [(0, (0.0, 0.0)), (1, (1.0, 0.0))]
         points_b_toward = [(0, (3.0, 0.0)), (1, (2.0, 0.0))]
@@ -136,6 +143,21 @@ class PetHelperTests(unittest.TestCase):
         self.assertFalse(intersects)
         self.assertIsNone(point)
 
+    def test_polyline_intersection_uses_anchor_footprints(self):
+        points_a = [(0, (0.0, 0.0)), (1, (0.0, 10.0))]
+        points_b = [(0, (0.4, 0.0)), (1, (0.4, 10.0))]
+        footprints_a = [(0, (-0.5, -0.5, 0.5, 0.5)), (1, (-0.5, 9.5, 0.5, 10.5))]
+        footprints_b = [(0, (0.2, -0.5, 0.6, 0.5)), (1, (0.2, 9.5, 0.6, 10.5))]
+        intersects, point = PET._polyline_intersects_in_rect(
+            points_a,
+            points_b,
+            (-1.0, -1.0, 1.0, 11.0),
+            footprints_a,
+            footprints_b,
+        )
+        self.assertTrue(intersects)
+        self.assertIsNotNone(point)
+
     def test_conflict_zone_cells_include_partial_overlap(self):
         polygon = [(5.0, 5.0), (15.0, 5.0), (15.0, 15.0), (5.0, 15.0)]
         cells = PET._conflict_zone_cells_from_polygon(
@@ -150,12 +172,12 @@ class PetHelperTests(unittest.TestCase):
         )
         self.assertEqual(cells, {(0, 0)})
 
-    def test_pet_activation_display_cells_clip_to_conflict_zone(self):
+    def test_pet_activation_display_cells_preserve_region_with_conflict_zone(self):
         region_cells = {(0, 0), (0, 1), (1, 0), (1, 1)}
         conflict_zone_cells = {(0, 1), (1, 1)}
         self.assertEqual(
             PET._pet_activation_display_cells((0, 0), region_cells, conflict_zone_cells),
-            {(0, 1), (1, 1)},
+            region_cells,
         )
 
     def test_pet_activation_display_cells_use_primary_without_conflict_zone(self):

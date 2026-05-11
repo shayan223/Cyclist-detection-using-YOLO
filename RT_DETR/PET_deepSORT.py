@@ -38,6 +38,8 @@ except ImportError:
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DEFAULT_MODEL_PATH = './pdx_finetuned_rtdetr.onnx'
 DEFAULT_NON_PET_SECONDS = 10.0
+ANCHOR_FOOTPRINT_WIDTH_FRACTION = 0.40
+ANCHOR_FOOTPRINT_HEIGHT_FRACTION = 0.20
 
 
 # ---------------------------------------------------------------------------
@@ -775,11 +777,38 @@ def _track_anchor_point(tlbr):
     return (float((x1 + x2) / 2.0), float(y2))
 
 
+def _track_anchor_footprint(
+    tlbr,
+    width_fraction=ANCHOR_FOOTPRINT_WIDTH_FRACTION,
+    height_fraction=ANCHOR_FOOTPRINT_HEIGHT_FRACTION,
+):
+    """Return a bbox-clipped rectangle around the track anchor."""
+    x1, y1, x2, y2 = map(float, tlbr)
+    anchor_x, anchor_y = _track_anchor_point((x1, y1, x2, y2))
+    box_w = max(0.0, x2 - x1)
+    box_h = max(0.0, y2 - y1)
+    half_w = box_w * max(0.0, float(width_fraction)) / 2.0
+    height = box_h * max(0.0, float(height_fraction))
+    return (
+        max(x1, anchor_x - half_w),
+        max(y1, anchor_y - height),
+        min(x2, anchor_x + half_w),
+        min(y2, anchor_y),
+    )
+
+
 def _append_point_if_new(points, frame_idx, point):
     """Append a visit/history point only when it materially changes the path."""
     point = (float(point[0]), float(point[1]))
     if not points or points[-1][0] != frame_idx or points[-1][1] != point:
         points.append((int(frame_idx), point))
+
+
+def _append_rect_if_new(rects, frame_idx, rect):
+    """Append a frame-indexed rectangle only when it materially changes."""
+    rect = tuple(float(v) for v in rect)
+    if not rects or rects[-1][0] != frame_idx or rects[-1][1] != rect:
+        rects.append((int(frame_idx), rect))
 
 
 def _prune_points(points, min_frame):
@@ -812,7 +841,7 @@ def _pet_activation_display_cells(primary_cell, region_cells, conflict_zone_cell
     """Return grid cells to highlight for a PET activation."""
     if conflict_zone_cells is None:
         return {primary_cell}
-    return set(region_cells) & set(conflict_zone_cells)
+    return set(region_cells)
 
 
 def _point_in_rect(point, rect):
@@ -858,6 +887,46 @@ def _segment_intersection_point(a1, a2, b1, b2, eps=1e-6):
     return None
 
 
+def _rect_intersection(rect_a, rect_b, eps=1e-6):
+    """Return the overlapping rectangle for two rects, or None."""
+    ax1, ay1, ax2, ay2 = rect_a
+    bx1, by1, bx2, by2 = rect_b
+    x1 = max(float(ax1), float(bx1))
+    y1 = max(float(ay1), float(by1))
+    x2 = min(float(ax2), float(bx2))
+    y2 = min(float(ay2), float(by2))
+    if x2 + eps < x1 or y2 + eps < y1:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def _rect_center(rect):
+    """Return the center point of a rectangle."""
+    x1, y1, x2, y2 = rect
+    return ((float(x1) + float(x2)) / 2.0, (float(y1) + float(y2)) / 2.0)
+
+
+def _segment_intersects_rect(segment, rect):
+    """Return an intersection point when a segment touches a rectangle."""
+    p1, p2 = segment
+    if _point_in_rect(p1, rect):
+        return (float(p1[0]), float(p1[1]))
+    if _point_in_rect(p2, rect):
+        return (float(p2[0]), float(p2[1]))
+    x1, y1, x2, y2 = rect
+    edges = [
+        ((x1, y1), (x2, y1)),
+        ((x2, y1), (x2, y2)),
+        ((x2, y2), (x1, y2)),
+        ((x1, y2), (x1, y1)),
+    ]
+    for edge_a, edge_b in edges:
+        point = _segment_intersection_point(p1, p2, edge_a, edge_b)
+        if point is not None:
+            return point
+    return None
+
+
 def _segments_from_points(points):
     """Build consecutive polyline segments from `(frame, point)` samples."""
     out = []
@@ -869,8 +938,8 @@ def _segments_from_points(points):
     return out
 
 
-def _polyline_intersects_in_rect(points_a, points_b, rect):
-    """Return `(True, point)` when two polylines intersect inside the region rectangle."""
+def _polyline_intersects_in_rect(points_a, points_b, rect, footprints_a=None, footprints_b=None):
+    """Return `(True, point)` when two trajectories intersect inside the region rectangle."""
     segs_a = _segments_from_points(points_a)
     segs_b = _segments_from_points(points_b)
     for a1, a2 in segs_a:
@@ -878,6 +947,37 @@ def _polyline_intersects_in_rect(points_a, points_b, rect):
             pt = _segment_intersection_point(a1, a2, b1, b2)
             if pt is not None and _point_in_rect(pt, rect):
                 return True, pt
+    if footprints_a and footprints_b:
+        rect_segments_a = [
+            ((float(p1[0]), float(p1[1])), (float(p2[0]), float(p2[1])))
+            for p1, p2 in segs_a
+        ]
+        rect_segments_b = [
+            ((float(p1[0]), float(p1[1])), (float(p2[0]), float(p2[1])))
+            for p1, p2 in segs_b
+        ]
+        for _, footprint_a in footprints_a:
+            footprint_a_in_region = _rect_intersection(footprint_a, rect)
+            if footprint_a_in_region is None:
+                continue
+            for segment_b in rect_segments_b:
+                point = _segment_intersects_rect(segment_b, footprint_a_in_region)
+                if point is not None:
+                    return True, point
+            for _, footprint_b in footprints_b:
+                overlap = _rect_intersection(footprint_a_in_region, footprint_b)
+                if overlap is not None:
+                    overlap_in_region = _rect_intersection(overlap, rect)
+                    if overlap_in_region is not None:
+                        return True, _rect_center(overlap_in_region)
+        for _, footprint_b in footprints_b:
+            footprint_b_in_region = _rect_intersection(footprint_b, rect)
+            if footprint_b_in_region is None:
+                continue
+            for segment_a in rect_segments_a:
+                point = _segment_intersects_rect(segment_a, footprint_b_in_region)
+                if point is not None:
+                    return True, point
     return False, None
 
 
@@ -2329,6 +2429,7 @@ def process_video(
                     track_id = track.track_id
                     tlbr = track.to_tlbr()
                     anchor = _track_anchor_point(tlbr)
+                    anchor_footprint = _track_anchor_footprint(tlbr)
                     cells = _bbox_overlap_cells((tlbr[0], tlbr[1], tlbr[2], tlbr[3]), width, height, grid_rows, grid_cols)
                     occupied_cells_all.update(cells)
                     history = track_histories[(cid, track_id)]
@@ -2356,6 +2457,7 @@ def process_video(
                         "track": track,
                         "tlbr": tlbr,
                         "point": anchor,
+                        "footprint": anchor_footprint,
                         "cells": set(cells),
                         "speed_ft_per_sec": track_speeds_ft.get((cid, track_id)),
                     }
@@ -2374,21 +2476,22 @@ def process_video(
 
             for cell in list(cells_to_update):
                 region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
-                if conflict_zone_cells is not None:
-                    region_cells &= conflict_zone_cells
-                    if not region_cells:
-                        continue
                 present_by_class = defaultdict(dict)
                 for cid, snapshots in track_snapshots.items():
                     for track_id, snapshot in snapshots.items():
                         if snapshot["cells"] & region_cells:
-                            present_by_class[cid][track_id] = snapshot["point"]
+                            present_by_class[cid][track_id] = {
+                                "point": snapshot["point"],
+                                "footprint": snapshot["footprint"],
+                            }
 
                 active_by_class = active_region_visits[cell]
                 for cid in class_ids:
                     current_tracks = present_by_class.get(cid, {})
                     current_active = active_by_class[cid]
-                    for track_id, point in current_tracks.items():
+                    for track_id, sample in current_tracks.items():
+                        point = sample["point"]
+                        footprint = sample["footprint"]
                         visit = current_active.get(track_id)
                         if visit is None:
                             visit = {
@@ -2397,11 +2500,13 @@ def process_video(
                                 "entry_frame": frame_count,
                                 "last_frame": frame_count,
                                 "points": [(frame_count, point)],
+                                "footprints": [(frame_count, footprint)],
                             }
                             current_active[track_id] = visit
                         else:
                             visit["last_frame"] = frame_count
                             _append_point_if_new(visit["points"], frame_count, point)
+                            _append_rect_if_new(visit["footprints"], frame_count, footprint)
 
                     for track_id in list(current_active.keys()):
                         if track_id in current_tracks:
@@ -2429,10 +2534,6 @@ def process_video(
                     cells_to_check &= conflict_zone_cells
                 for cell in sorted(cells_to_check):
                     region_cells = _region_cells_for_primary(cell, grid_rows, grid_cols, region_neighbors_enabled)
-                    if conflict_zone_cells is not None:
-                        region_cells &= conflict_zone_cells
-                        if not region_cells:
-                            continue
                     region_rect = _region_rect_from_cells(region_cells, width, height, grid_rows, grid_cols)
                     visits_a = list(closed_region_visits.get(cell, {}).get(cid_a, [])) + list(active_region_visits.get(cell, {}).get(cid_a, {}).values())
                     visits_b = list(closed_region_visits.get(cell, {}).get(cid_b, [])) + list(active_region_visits.get(cell, {}).get(cid_b, {}).values())
@@ -2476,7 +2577,13 @@ def process_video(
                             if pet_frames > max_pet_time:
                                 continue
 
-                            intersects, intersection_point = _polyline_intersects_in_rect(visit_a["points"], visit_b["points"], region_rect)
+                            intersects, intersection_point = _polyline_intersects_in_rect(
+                                visit_a["points"],
+                                visit_b["points"],
+                                region_rect,
+                                visit_a.get("footprints"),
+                                visit_b.get("footprints"),
+                            )
                             if not intersects:
                                 continue
 
