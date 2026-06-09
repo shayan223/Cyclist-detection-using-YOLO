@@ -32,6 +32,15 @@ eurocity_yolo/
 /PET_Analysis
 /RT_DETR/runs
 *.pyc
+__pycache__/
 /YOLO26/runs
 /RT_DETR/PET_Analysis
 /.claude
+
+# Deprecated archive: keep README/code/scripts trackable, ignore heavy data/artifacts.
+/deprecated_content/legacy_datasets/
+/deprecated_content/legacy_media_outputs/
+/deprecated_content/legacy_training_outputs/
+/deprecated_content/tracked_cache/
+/deprecated_content/legacy_model_code/**/runs/
+/deprecated_content/legacy_model_code/**/__pycache__/

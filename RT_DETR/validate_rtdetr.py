@@ -4,7 +4,7 @@ import torch
 from ultralytics import RTDETR
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-DEFAULT_MODEL = 'cyclist_detection_rtdetr/weights/best.pt'
+DEFAULT_MODEL = 'pdx_finetuned_rtdetr.pt'
 DEFAULT_DATA = 'v5_pdx_cyclist_dataset/data.yaml'
 DEFAULT_IMGSZ = 640
 

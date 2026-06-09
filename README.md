@@ -1,91 +1,170 @@
-# Cyclist-detection-using-YOLO
+# Cyclist and Pedestrian Detection with RT-DETR
 
-## Prerequisites:
-    * Python 3.x
-    * `opencv-python` (`pip install opencv-python`)
-    * `ultralytics` (`pip install ultralytics`)
-    * `torch` (`pip install torch`) (PyTorch is a dependency of `ultralytics`)
-    * A pre-trained YOLO model weights file (e.g., `yolov8l.pt`). You can download these from the official YOLOv8 repository or other sources.
+This repository is organized around the current RT-DETR cyclist/pedestrian
+pipeline. Older YOLO, RF-DETR, RTMDet, ensemble, ByteTrack, dataset, checkpoint,
+and media artifacts have been moved into `deprecated_content/` so the active
+workflow is easier to find.
 
-## Labeling Your Own Data/Videos
+## Active Workflow
 
-To label your own videos and add them to the training dataset:
+The maintained pipeline is:
 
-1. **Label videos using movement_window.py:**
-   ```bash
-   python .\movement_window.py <video.mp4> --timestamps-csv <timestamp_file.csv>
-   ```
-   This will process your video and generate labeled training data in YOLO format. The script extracts frames from your video and allows you to annotate cyclists and pedestrians.
+1. Prepare or label PDX video data.
+2. Split and optionally augment the YOLO-format dataset.
+3. Train or fine-tune RT-DETR on the PDX dataset.
+4. Run RT-DETR inference and DeepSORT tracking on target videos.
+5. Tune inference/tracking config with `RT_DETR/RTDETR_AUTO_EVAL`.
+6. Generate reproducible result tables, figures, configs, and videos with
+   `results_reporting`.
 
-2. **Re-split the dataset after adding new data:**
-   ```bash
-   python .\split_pdx_dataset.py --allow-resplit
-   ```
-   After adding new labeled data to your dataset, run this command to combine all data from train/valid/test splits and redistribute them according to the configured ratios (default: 70% train, 20% validation, 10% test). This ensures your new data is properly integrated into all splits.
+## Active Layout
 
-## annotate_raw_data.py:
+- `RT_DETR/` - current RT-DETR training, validation, inference, PET analysis,
+  config tuning, tests, checkpoints, and AUTO_EVAL tooling.
+- `RT_DETR/RTDETR_AUTO_EVAL/` - current inference-parameter search and
+  evaluation suite.
+- `results_reporting/` - reproducible report generation for the completed
+  AUTO_EVAL run.
+- `v5_pdx_cyclist_dataset/` - current PDX training dataset used by RT-DETR.
+- `raw_pdx_videos/` - raw and labeling source material.
+- Root `trim*.mp4` and the SE Division video - active inference inputs
+  referenced by RT-DETR config files.
+- Root data-prep scripts - active dataset creation, splitting, augmentation,
+  and conversion helpers.
+- `deprecated_content/` - archived legacy content kept for reference, but not
+  part of the current pipeline.
 
-### Key Features
+## Environment
 
-* **Object Detection:** Utilizes the `ultralytics` YOLO library to detect 'person' and 'bicycle' objects in images.
-* **Cyclist Identification:** Implements an IoU (Intersection over Union) calculation to determine if a detected person and bicycle overlap sufficiently to be considered a 'cyclist'.
-* **YOLO Annotation Generation:** Converts the detected bounding box coordinates (for cyclists, persons, and bicycles) into the normalized YOLO format (`center_x`, `center_y`, `width`, `height`).
-* **Class Labeling:** Assigns specific class labels in the annotation files:
-    * `0`: cyclist (when a person and bicycle have a high IoU)
-    * `1`: person (when a person is detected without a closely overlapping bicycle)
-    * `2`: bicycle (when a bicycle is detected without a closely overlapping person)
-* **Batch Processing:** Processes all images within a specified input directory.
-* **Output Directory:** Saves the generated annotation files (in `.txt` format, one per image) in a designated output directory.
-* **Device Agnostic:** Automatically utilizes a CUDA-enabled GPU if available, falling back to CPU if not.
-* **Error Handling:** Includes basic error handling for image loading and directory existence.
+Install the project dependencies from the repository root:
 
+```powershell
+pip install -r requirements.txt
+```
 
-## process_video_for_cyclist.py
+Key runtime packages include `ultralytics`, `torch`, `opencv-python`, `pandas`,
+`pyyaml`, `matplotlib`, and `deep_sort_realtime`.
 
-### Key Features
+## Data Preparation
 
-* **YouTube Video Downloading:** Downloads videos directly from YouTube URLs using `yt-dlp` for processing.
-* **Local Video Processing:** Processes video files (MP4, AVI, MOV, MKV) from a specified local folder.
-* **YOLO-Powered Bicycle Detection:** Utilizes the `ultralytics` YOLO library for robust and efficient bicycle detection in video frames.
-* **Intelligent Frame Extraction:** Employs Intersection over Union (IoU) to compare consecutive bicycle detections and skips saving frames with high overlap, reducing redundancy in the output image dataset.
-* **Configurable Overlap Threshold:** The `overlap_between_frames` parameter allows customization of the sensitivity for frame skipping.
-* **Confidence Filtering:** The `confidence_threshold` parameter enables filtering bicycle detections based on the YOLO model's confidence score.
-* **Organized Output:** Saves extracted frames as sequentially numbered `.jpg` images in a designated output directory.
-* **Hardware Acceleration:** Automatically leverages CUDA-enabled GPUs for faster processing, with CPU fallback.
-* **Basic Error Handling:** Includes checks for directory existence, video file accessibility, and YouTube download issues.
-* **Sequential Image Naming:** Output images are named with sequential numbers for easy organization.
+Label PDX video data into a YOLO-format dataset:
 
-## fine_tune_yolo.py
+```powershell
+python .\movement_window.py <video.mp4> --timestamps-csv <timestamp_file.csv> --dataset-dir v5_pdx_cyclist_dataset
+```
 
-## Key Features
+Re-split the dataset after adding or editing labels:
 
-* **YOLO Model Fine-tuning:** Fine-tunes a pre-trained YOLO model (specified by `MODEL_PATH`, default: `yolov8l.pt`) for cyclist detection.
-* **Custom Dataset Training:** Trains the model using a custom dataset defined by the `CONFIG_FILE_PATH` (default: `./training_data/config.yaml`), which should be in YOLO format.
-* **Configurable Training Parameters:** Allows easy adjustment of key training parameters:
-    * `EPOCHS`: Number of training epochs (default: 20).
-    * `BATCH`: Batch size for training (default: 16).
-    * `DEVICE`: Specifies the training device, automatically using CUDA if available (default: 'cuda' or 'cpu').
-* **Weights & Biases Disabling:** Includes an option to disable Weights & Biases logging during training by default.
-* **Early Stopping:** Implements `patience` to stop training early if no improvement is observed on the validation set, preventing overfitting.
-* **Periodic Model Saving:** Saves the model weights after each epoch (`save_period=1`).
-* **Organized Training Output:** Saves training results and model checkpoints within a `cyclist_detection` project and a `yolo_finetune` run.
-* **Validation After Training:** Automatically performs validation on the trained model after the fine-tuning process is complete, providing evaluation metrics.
+```powershell
+python .\split_pdx_dataset.py --dataset-dir v5_pdx_cyclist_dataset --allow-resplit
+```
 
+Optionally generate an augmented dataset copy:
 
-## test_fine_tuned_yolo.py
+```powershell
+python .\augment_dataset_3x.py --dataset-dir v5_pdx_cyclist_dataset --output-dir <augmented_dataset_dir> --multiplier 3
+```
 
-## Key Features
+Combine external YOLO-format datasets when rebuilding a training set:
 
-* **End-to-End Cyclist Tracking and Counting:** Processes video clips to detect, track, and count unique cyclists.
-* **YOLO for Detection:** Utilizes a fine-tuned YOLO model (specified by `MODEL_PATH`) to accurately detect cyclists in each video frame.
-* **DeepSORT for Tracking:** Integrates the DeepSORT algorithm (`deep_sort_realtime`) for robust tracking of detected cyclists across frames, even with occlusions.
-* **Deep Feature Extraction:** Employs a ResNet-50 based feature extractor to generate deep appearance features for each detected cyclist, improving tracking accuracy during occlusions and re-identification.
-* **Configurable Tracking Parameters:** Allows adjustment of DeepSORT parameters:
-    * `MAX_INACTIVE_FRAMES`: Maximum number of frames a track can be inactive before being deleted.
-    * `MAX_IOU_DISTANCE`: Maximum Intersection over Union (IoU) distance for associating detections with existing tracks.
-* **Confidence Threshold:** Filters cyclist detections based on a `CONF_THRESHOLD` to ensure only high-confidence detections are tracked.
-* **Video Input:** Accepts a list of input video clip paths (`INPUT_VIDEO_CLIPS`).
-* **Video Output:** Saves the processed video with bounding boxes and track IDs overlaid, along with a unique cyclist count, to an output file (`OUTPUT_VIDEO_PATH`).
-* **Image Preprocessing:** Includes image resizing and normalization for the feature extractor.
-* **Clear Visual Output:** Draws bounding boxes and track IDs around detected and tracked cyclists in the output video, and displays the total unique cyclist count.
+```powershell
+python .\combine_datasets.py --input-dirs <dataset_a> <dataset_b> --output-dir <merged_dataset> --filter-classes cyclist pedestrian
+```
 
+## RT-DETR Training
+
+The current training entrypoint is:
+
+```powershell
+cd .\RT_DETR
+python .\fine_tune_rtdetr.py --data ..\v5_pdx_cyclist_dataset\data.yaml --model .\rt_detr_macro_augmented.pt
+```
+
+Useful defaults live in `RT_DETR/fine_tune_rtdetr.py`:
+
+- Dataset: `../v5_pdx_cyclist_dataset/data.yaml`
+- Base checkpoint: `rt_detr_macro_augmented.pt`
+- Project name: `cyclist_detection_rtdetr`
+- Run name prefix: `rtdetr_finetune`
+
+Validate a trained checkpoint:
+
+```powershell
+cd .\RT_DETR
+python .\validate_rtdetr.py --model <checkpoint.pt> --data ..\v5_pdx_cyclist_dataset\data.yaml
+```
+
+Export a PyTorch checkpoint for inference:
+
+```powershell
+cd .\RT_DETR
+python .\export_engine.py --model .\pdx_finetuned_rtdetr.pt --format onnx
+```
+
+## Inference And PET
+
+RT-DETR inference configs are in `RT_DETR/config_*.yaml`. They intentionally
+reference root input videos such as `../trim5.mp4`, so those videos remain in
+the repository root.
+
+Run RT-DETR plus DeepSORT inference:
+
+```powershell
+cd .\RT_DETR
+python .\deepSORT_rtdetr.py --config .\config_trim5.yaml
+```
+
+Export frame-level predictions while running inference:
+
+```powershell
+cd .\RT_DETR
+python .\deepSORT_rtdetr.py --config .\config_trim5.yaml --csv
+```
+
+Run PET analysis:
+
+```powershell
+cd .\RT_DETR
+python .\PET_deepSORT.py --config .\config_trim5.yaml
+```
+
+For single-cell PET analysis:
+
+```powershell
+cd .\RT_DETR
+python .\PET_deepSORT.py --config .\config_trim5.yaml --no-grid --grid-size 8
+```
+
+## Config Tuning
+
+`RT_DETR/RTDETR_AUTO_EVAL` tunes inference and tracking YAML parameters. It does
+not retrain the detector checkpoint.
+
+From `RT_DETR/RTDETR_AUTO_EVAL`, run the current project suite:
+
+```powershell
+python -m rtdetr_eval suite --model ..\pdx_finetuned_rtdetr.pt --video ..\..\trim5.mp4 --gt data\camera_1\ground_truth.csv --manual-config ..\config_trim5.yaml --infer-script ..\deepSORT_rtdetr.py --inference-cwd .. --n 50 --refine-n 30 --seed 42
+```
+
+The current preserved suite run is:
+
+```text
+RT_DETR/RTDETR_AUTO_EVAL/runs/camera_1_trim5/20260608_220235
+```
+
+## Results Reporting
+
+Regenerate reproducible report outputs from the preserved AUTO_EVAL suite:
+
+```powershell
+python .\results_reporting\generate_results.py
+```
+
+This writes tables, figures, copied comparison configs, copied report videos,
+and a manifest under `results_reporting/outputs/`.
+
+## Deprecated Content
+
+Legacy material was moved, not deleted. See `deprecated_content/README.md` for
+the archive map. Archived files are kept for reference and comparison, but the
+current pipeline should not depend on them.
