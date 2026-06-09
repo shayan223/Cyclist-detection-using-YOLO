@@ -1,0 +1,102 @@
+# ---------------------------------------------------------------------------
+# RT-DETR + DeepSORT — Camera Calibration Template
+#
+# This file is the BASE for the sweep. Fields marked [CAMERA] must be set
+# once per camera and are never touched by the sweep. Everything else is
+# fair game for optimisation.
+# ---------------------------------------------------------------------------
+
+# I/O  — [CAMERA] set model path; input/output are overridden per-video at runtime
+model: ../rtdetr_finetune_imgsz640_mos1.0_mix0.15_fliplr0.55/weights/best.pt
+input: ""
+output: ""
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+inference:
+  confidence: 0.60        # [SWEEP] global detection floor
+  iou: 0.70               # [SWEEP] model-internal NMS IoU
+  half: false             # [CAMERA] true only with CUDA GPU + ONNX/TRT
+  compile: false
+  imgsz: 0                # 0 = model default (640)
+  downscale_width: 960    # [SWEEP] try 640 / 800 / 960 / 1280
+  downscale_height: 540   # kept paired with width by calibrate.py
+
+# ---------------------------------------------------------------------------
+# Detection passes
+# ---------------------------------------------------------------------------
+passes:
+  top_region:
+    enabled: true
+    ratio: 0.55           # [SWEEP] fraction of frame height for top-region crop
+    imgsz: 0
+    confidence: null      # null → inherit inference.confidence
+
+  sahi:
+    enabled: false
+    y_max_fraction: 0.55
+    prescale: 1.5
+    tile_size: 200
+    tile_overlap: 0.3
+    tile_interval: 2
+    imgsz: 0
+    confidence: null
+
+# [CAMERA] use warp_calibrate.py to calculate warping
+  warp:
+    enabled: true
+    src_points:
+      - [481, 60]
+      - [910, 142]
+      - [703, 525]
+      - [20, 206]
+    dst_size: [960, 480]
+    confidence: null
+    imgsz: 0
+# ---------------------------------------------------------------------------
+# NMS (pre-tracker duplicate suppression)
+# ---------------------------------------------------------------------------
+nms:
+  hard_iou: 0.25              # [SWEEP]
+  containment_fraction: 0.50  # [SWEEP]
+  crowd_mode: soft-nms
+  soft_nms_iou: 0.25          # [SWEEP]
+  soft_nms_sigma: 0.20        # [SWEEP]
+
+# ---------------------------------------------------------------------------
+# Per-class configuration
+# ---------------------------------------------------------------------------
+classes:
+  - id: 0
+    name: Cyclist
+    color: [0, 255, 0]
+    text_color: [0, 0, 0]
+    min_confidence: 0.70      # [SWEEP]
+    tracker:
+      max_age: 10             # [SWEEP]
+      n_init: 2               # [SWEEP]
+      max_iou_distance: 0.80  # [SWEEP]
+      nms_max_overlap: 0.15   # [SWEEP]
+      max_cosine_distance: 0.60  # [SWEEP]
+      embedder: mobilenet
+
+  - id: 1
+    name: Pedestrian
+    color: [255, 0, 0]
+    text_color: [255, 255, 255]
+    min_confidence: 0.65      # [SWEEP]
+    tracker:
+      max_age: 10             # [SWEEP]
+      n_init: 4               # [SWEEP]
+      max_iou_distance: 0.40  # [SWEEP]
+      nms_max_overlap: 0.15   # [SWEEP]
+      max_cosine_distance: 1.00  # [SWEEP]
+      embedder: mobilenet
+
+# ---------------------------------------------------------------------------
+# Debug / output mode
+# ---------------------------------------------------------------------------
+debug:
+  log_detections: false
+  inference_only: false

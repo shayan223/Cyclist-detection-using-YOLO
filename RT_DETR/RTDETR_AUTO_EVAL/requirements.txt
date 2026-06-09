@@ -1,0 +1,11 @@
+opencv-python-headless
+numpy
+pandas
+matplotlib
+pyyaml
+tqdm
+ultralytics
+torch
+torchvision
+deep-sort-realtime
+scipy

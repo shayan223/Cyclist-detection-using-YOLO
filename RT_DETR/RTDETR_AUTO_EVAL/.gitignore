@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Test / type / lint caches
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.hypothesis/
+**/.hypothesis/
+.tox/
+.nox/
+
+# Generic cache dirs / files
+.cache/
+**/.cache/
+*.cache
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+.cache/coverage
+
+# Build / packaging (often regenerated)
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Matplotlib font cache if created inside the repo
+.matplotlib/
+
+# Large binary assets (model weights / videos) — keep out of git
+*.pt
+*.mp4

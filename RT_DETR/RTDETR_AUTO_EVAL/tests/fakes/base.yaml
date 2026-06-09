@@ -1,0 +1,58 @@
+# Minimal base template for e2e tests. Contains exactly the nested keys that
+# rtdetr_eval.search.SEARCH_SPACE writes into, so apply_sample/set_nested work.
+model: ./fake.pt
+input: ""
+output: ""
+
+inference:
+  confidence: 0.60
+  iou: 0.70
+  half: false
+  compile: false
+  imgsz: 0
+  downscale_width: 960
+  downscale_height: 540
+
+passes:
+  top_region:
+    enabled: true
+    ratio: 0.55
+    imgsz: 0
+    confidence: null
+  sahi:
+    enabled: false
+  warp:
+    enabled: false
+
+nms:
+  hard_iou: 0.25
+  containment_fraction: 0.50
+  crowd_mode: soft-nms
+  soft_nms_iou: 0.25
+  soft_nms_sigma: 0.20
+
+classes:
+  - id: 0
+    name: Cyclist
+    min_confidence: 0.70
+    tracker:
+      max_age: 10
+      n_init: 2
+      max_iou_distance: 0.80
+      nms_max_overlap: 0.15
+      max_cosine_distance: 0.60
+      embedder: mobilenet
+  - id: 1
+    name: Pedestrian
+    min_confidence: 0.65
+    tracker:
+      max_age: 10
+      n_init: 4
+      max_iou_distance: 0.40
+      nms_max_overlap: 0.15
+      max_cosine_distance: 1.00
+      embedder: mobilenet
+
+debug:
+  log_detections: false
+  inference_only: false
