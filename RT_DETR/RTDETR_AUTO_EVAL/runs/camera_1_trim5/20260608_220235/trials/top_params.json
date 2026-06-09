@@ -1,0 +1,77 @@
+[
+  {
+    "trial": "exploit_019",
+    "score": 0.7673,
+    "params": {
+      "inference.confidence": 0.5,
+      "inference.iou": 0.85,
+      "inference.downscale_width": 960,
+      "passes.top_region.ratio": 0.54,
+      "nms.hard_iou": 0.21,
+      "nms.containment_fraction": 0.57,
+      "nms.soft_nms_iou": 0.31,
+      "nms.soft_nms_sigma": 0.2,
+      "classes.0.min_confidence": 0.57,
+      "classes.1.min_confidence": 0.73,
+      "classes.0.tracker.max_age": 7,
+      "classes.0.tracker.n_init": 1,
+      "classes.0.tracker.max_iou_distance": 0.84,
+      "classes.0.tracker.max_cosine_distance": 0.8,
+      "classes.1.tracker.max_age": 19,
+      "classes.1.tracker.n_init": 3,
+      "classes.1.tracker.max_iou_distance": 0.4,
+      "classes.1.tracker.max_cosine_distance": 0.57,
+      "inference.downscale_height": 540
+    }
+  },
+  {
+    "trial": "exploit_028",
+    "score": 0.767,
+    "params": {
+      "inference.confidence": 0.41,
+      "inference.iou": 0.58,
+      "inference.downscale_width": 800,
+      "passes.top_region.ratio": 0.5,
+      "nms.hard_iou": 0.3,
+      "nms.containment_fraction": 0.61,
+      "nms.soft_nms_iou": 0.17,
+      "nms.soft_nms_sigma": 0.28,
+      "classes.0.min_confidence": 0.55,
+      "classes.1.min_confidence": 0.67,
+      "classes.0.tracker.max_age": 6,
+      "classes.0.tracker.n_init": 1,
+      "classes.0.tracker.max_iou_distance": 0.77,
+      "classes.0.tracker.max_cosine_distance": 0.77,
+      "classes.1.tracker.max_age": 8,
+      "classes.1.tracker.n_init": 2,
+      "classes.1.tracker.max_iou_distance": 0.32,
+      "classes.1.tracker.max_cosine_distance": 0.43,
+      "inference.downscale_height": 450
+    }
+  },
+  {
+    "trial": "exploit_016",
+    "score": 0.76675,
+    "params": {
+      "inference.confidence": 0.55,
+      "inference.iou": 0.83,
+      "inference.downscale_width": 960,
+      "passes.top_region.ratio": 0.52,
+      "nms.hard_iou": 0.27,
+      "nms.containment_fraction": 0.65,
+      "nms.soft_nms_iou": 0.35,
+      "nms.soft_nms_sigma": 0.14,
+      "classes.0.min_confidence": 0.55,
+      "classes.1.min_confidence": 0.73,
+      "classes.0.tracker.max_age": 15,
+      "classes.0.tracker.n_init": 1,
+      "classes.0.tracker.max_iou_distance": 0.68,
+      "classes.0.tracker.max_cosine_distance": 0.68,
+      "classes.1.tracker.max_age": 10,
+      "classes.1.tracker.n_init": 2,
+      "classes.1.tracker.max_iou_distance": 0.53,
+      "classes.1.tracker.max_cosine_distance": 0.39,
+      "inference.downscale_height": 540
+    }
+  }
+]

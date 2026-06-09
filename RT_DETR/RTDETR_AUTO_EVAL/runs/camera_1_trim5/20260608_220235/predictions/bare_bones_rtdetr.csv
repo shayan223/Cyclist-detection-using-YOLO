@@ -1,0 +1,545 @@
+frame,predictions_json
+0,[]
+1,[]
+2,[]
+3,[]
+4,[]
+5,[]
+6,[]
+7,[]
+8,[]
+9,[]
+10,[]
+11,[]
+12,[]
+13,[]
+14,[]
+15,[]
+16,[]
+17,[]
+18,[]
+19,[]
+20,[]
+21,[]
+22,[]
+23,[]
+24,[]
+25,[]
+26,[]
+27,[]
+28,[]
+29,[]
+30,[]
+31,[]
+32,[]
+33,[]
+34,[]
+35,[]
+36,[]
+37,[]
+38,[]
+39,[]
+40,[]
+41,[]
+42,[]
+43,[]
+44,[]
+45,[]
+46,[]
+47,[]
+48,[]
+49,[]
+50,[]
+51,[]
+52,[]
+53,[]
+54,[]
+55,[]
+56,[]
+57,[]
+58,[]
+59,[]
+60,[]
+61,[]
+62,[]
+63,[]
+64,[]
+65,[]
+66,[]
+67,[]
+68,[]
+69,[]
+70,[]
+71,[]
+72,[]
+73,[]
+74,[]
+75,[]
+76,[]
+77,[]
+78,[]
+79,[]
+80,[]
+81,[]
+82,[]
+83,[]
+84,[]
+85,[]
+86,[]
+87,[]
+88,[]
+89,[]
+90,[]
+91,[]
+92,[]
+93,[]
+94,[]
+95,[]
+96,[]
+97,[]
+98,[]
+99,[]
+100,[]
+101,[]
+102,[]
+103,[]
+104,[]
+105,[]
+106,[]
+107,[]
+108,[]
+109,[]
+110,[]
+111,[]
+112,[]
+113,[]
+114,[]
+115,[]
+116,[]
+117,[]
+118,[]
+119,[]
+120,[]
+121,[]
+122,[]
+123,[]
+124,[]
+125,[]
+126,[]
+127,[]
+128,[]
+129,[]
+130,[]
+131,[]
+132,[]
+133,[]
+134,[]
+135,[]
+136,[]
+137,[]
+138,[]
+139,[]
+140,[]
+141,[]
+142,[]
+143,[]
+144,[]
+145,[]
+146,[]
+147,[]
+148,[]
+149,[]
+150,[]
+151,[]
+152,[]
+153,[]
+154,[]
+155,[]
+156,[]
+157,[]
+158,[]
+159,[]
+160,[]
+161,[]
+162,[]
+163,[]
+164,[]
+165,[]
+166,[]
+167,[]
+168,[]
+169,[]
+170,[]
+171,[]
+172,[]
+173,[]
+174,[]
+175,[]
+176,[]
+177,[]
+178,[]
+179,[]
+180,[]
+181,[]
+182,[]
+183,[]
+184,[]
+185,[]
+186,[]
+187,[]
+188,[]
+189,[]
+190,[]
+191,[]
+192,[]
+193,[]
+194,[]
+195,[]
+196,[]
+197,[]
+198,[]
+199,[]
+200,[]
+201,[]
+202,[]
+203,[]
+204,[]
+205,[]
+206,[]
+207,[]
+208,[]
+209,[]
+210,[]
+211,[]
+212,[]
+213,[]
+214,[]
+215,[]
+216,[]
+217,[]
+218,[]
+219,[]
+220,[]
+221,[]
+222,[]
+223,[]
+224,[]
+225,[]
+226,[]
+227,[]
+228,[]
+229,[]
+230,[]
+231,[]
+232,[]
+233,[]
+234,[]
+235,[]
+236,[]
+237,[]
+238,[]
+239,[]
+240,[]
+241,[]
+242,[]
+243,[]
+244,[]
+245,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.701845, ""bbox"": [329, 226, 386, 350]}]"
+246,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.700887, ""bbox"": [329, 225, 386, 350]}]"
+247,[]
+248,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.748217, ""bbox"": [339, 227, 399, 352]}]"
+249,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.748248, ""bbox"": [339, 227, 399, 352]}]"
+250,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.750448, ""bbox"": [338, 227, 399, 353]}]"
+251,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.730034, ""bbox"": [355, 230, 407, 354]}]"
+252,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.730492, ""bbox"": [355, 230, 407, 355]}]"
+253,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.730741, ""bbox"": [355, 230, 407, 355]}]"
+254,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.745461, ""bbox"": [365, 228, 421, 359]}]"
+255,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.745487, ""bbox"": [365, 228, 421, 359]}]"
+256,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.741649, ""bbox"": [365, 228, 421, 359]}]"
+257,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.760038, ""bbox"": [374, 226, 437, 355]}]"
+258,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.760299, ""bbox"": [374, 226, 438, 355]}]"
+259,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.760459, ""bbox"": [374, 226, 438, 355]}]"
+260,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.734189, ""bbox"": [382, 228, 446, 360]}]"
+261,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.734166, ""bbox"": [382, 228, 446, 360]}]"
+262,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.734003, ""bbox"": [382, 228, 446, 360]}]"
+263,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.732744, ""bbox"": [398, 232, 457, 364]}]"
+264,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.733367, ""bbox"": [398, 232, 457, 364]}]"
+265,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.732329, ""bbox"": [398, 233, 457, 364]}]"
+266,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.771362, ""bbox"": [415, 233, 469, 363]}]"
+267,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.771512, ""bbox"": [415, 233, 469, 363]}]"
+268,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.771336, ""bbox"": [415, 233, 469, 363]}]"
+269,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.772682, ""bbox"": [424, 232, 486, 365]}]"
+270,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.773555, ""bbox"": [425, 232, 486, 365]}]"
+271,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.772994, ""bbox"": [425, 232, 486, 365]}]"
+272,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.741001, ""bbox"": [441, 239, 504, 375]}]"
+273,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.741065, ""bbox"": [441, 239, 504, 375]}]"
+274,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.742899, ""bbox"": [441, 239, 504, 375]}]"
+275,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753243, ""bbox"": [459, 247, 514, 380]}]"
+276,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753481, ""bbox"": [459, 247, 514, 380]}]"
+277,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753191, ""bbox"": [459, 247, 514, 380]}]"
+278,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.758079, ""bbox"": [472, 244, 533, 380]}]"
+279,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.758164, ""bbox"": [472, 244, 533, 380]}]"
+280,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.758928, ""bbox"": [472, 244, 533, 380]}]"
+281,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.775171, ""bbox"": [484, 239, 557, 384]}]"
+282,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.775478, ""bbox"": [484, 239, 556, 384]}]"
+283,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.775099, ""bbox"": [484, 239, 556, 385]}]"
+284,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.773074, ""bbox"": [498, 243, 570, 386]}]"
+285,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.773083, ""bbox"": [498, 243, 570, 386]}]"
+286,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.772866, ""bbox"": [499, 244, 570, 386]}]"
+287,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.770112, ""bbox"": [518, 247, 582, 392]}]"
+288,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.769957, ""bbox"": [517, 247, 582, 392]}]"
+289,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.770807, ""bbox"": [517, 247, 582, 392]}]"
+290,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794508, ""bbox"": [532, 246, 592, 396]}]"
+291,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794627, ""bbox"": [532, 246, 592, 396]}]"
+292,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794522, ""bbox"": [532, 246, 592, 396]}]"
+293,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792377, ""bbox"": [542, 247, 607, 404]}]"
+294,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.79191, ""bbox"": [542, 247, 607, 404]}]"
+295,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.791721, ""bbox"": [542, 247, 607, 404]}]"
+296,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792191, ""bbox"": [556, 253, 624, 403]}]"
+297,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792387, ""bbox"": [556, 253, 624, 403]}]"
+298,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792466, ""bbox"": [556, 253, 624, 403]}]"
+299,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.781749, ""bbox"": [573, 257, 638, 407]}]"
+300,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.78161, ""bbox"": [573, 257, 638, 407]}]"
+301,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.784595, ""bbox"": [573, 257, 638, 407]}]"
+302,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794293, ""bbox"": [585, 256, 656, 413]}]"
+303,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794808, ""bbox"": [585, 256, 656, 413]}]"
+304,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794394, ""bbox"": [585, 256, 657, 413]}]"
+305,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.791907, ""bbox"": [593, 258, 666, 417]}]"
+306,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.791727, ""bbox"": [593, 258, 665, 417]}]"
+307,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.791459, ""bbox"": [593, 258, 666, 417]}]"
+308,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.769283, ""bbox"": [604, 264, 676, 422]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.76348, ""bbox"": [438, 215, 534, 329]}]"
+309,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.769712, ""bbox"": [604, 264, 676, 422]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.763076, ""bbox"": [438, 215, 534, 329]}]"
+310,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.766623, ""bbox"": [438, 215, 534, 329]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.764478, ""bbox"": [603, 265, 676, 422]}]"
+311,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.784411, ""bbox"": [624, 260, 681, 418]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.781822, ""bbox"": [451, 218, 547, 331]}]"
+312,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.784169, ""bbox"": [624, 260, 681, 418]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.780947, ""bbox"": [451, 218, 547, 331]}]"
+313,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.784243, ""bbox"": [624, 260, 681, 418]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.781199, ""bbox"": [451, 218, 547, 331]}]"
+314,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.813397, ""bbox"": [636, 265, 699, 431]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.782377, ""bbox"": [460, 219, 558, 328]}]"
+315,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.81338, ""bbox"": [636, 265, 699, 431]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.782439, ""bbox"": [460, 219, 558, 328]}]"
+316,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.813386, ""bbox"": [636, 265, 699, 431]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.782435, ""bbox"": [460, 219, 558, 328]}]"
+317,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.822268, ""bbox"": [641, 275, 712, 433]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.76256, ""bbox"": [470, 222, 570, 335]}]"
+318,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.822287, ""bbox"": [641, 275, 712, 433]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.762796, ""bbox"": [470, 222, 570, 335]}]"
+319,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.821174, ""bbox"": [641, 274, 712, 433]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.760884, ""bbox"": [469, 221, 571, 335]}]"
+320,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.82112, ""bbox"": [647, 278, 723, 434]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.779914, ""bbox"": [480, 208, 586, 338]}]"
+321,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.820772, ""bbox"": [647, 278, 723, 433]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.781246, ""bbox"": [480, 208, 586, 338]}]"
+322,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.821125, ""bbox"": [647, 278, 723, 433]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.782017, ""bbox"": [480, 208, 587, 338]}]"
+323,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790354, ""bbox"": [660, 279, 734, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.786752, ""bbox"": [490, 206, 595, 337]}]"
+324,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790873, ""bbox"": [660, 279, 734, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.785945, ""bbox"": [490, 207, 594, 337]}]"
+325,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790749, ""bbox"": [660, 279, 734, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.786551, ""bbox"": [490, 207, 595, 337]}]"
+326,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792114, ""bbox"": [680, 281, 742, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.77178, ""bbox"": [503, 219, 606, 340]}]"
+327,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792877, ""bbox"": [681, 281, 742, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.770761, ""bbox"": [502, 218, 606, 340]}]"
+328,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792876, ""bbox"": [681, 281, 742, 436]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.770777, ""bbox"": [502, 218, 606, 340]}]"
+329,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.789993, ""bbox"": [523, 225, 622, 346]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.782603, ""bbox"": [693, 279, 761, 438]}]"
+330,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.790661, ""bbox"": [523, 225, 622, 346]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.782269, ""bbox"": [693, 279, 761, 438]}]"
+331,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.79118, ""bbox"": [523, 225, 622, 346]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.782155, ""bbox"": [693, 279, 761, 438]}]"
+332,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.811905, ""bbox"": [699, 281, 780, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.779451, ""bbox"": [534, 226, 635, 347]}]"
+333,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.81173, ""bbox"": [699, 281, 780, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.778854, ""bbox"": [534, 226, 635, 347]}]"
+334,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.812182, ""bbox"": [699, 281, 780, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.779047, ""bbox"": [533, 226, 635, 347]}]"
+335,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.808242, ""bbox"": [704, 287, 790, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.787014, ""bbox"": [544, 228, 650, 349]}]"
+336,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.808234, ""bbox"": [704, 287, 790, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.787081, ""bbox"": [544, 228, 650, 349]}]"
+337,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.808334, ""bbox"": [704, 287, 790, 445]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.786173, ""bbox"": [544, 228, 650, 349]}]"
+338,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.821064, ""bbox"": [561, 228, 667, 352]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.763813, ""bbox"": [737, 290, 801, 443]}]"
+339,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.821344, ""bbox"": [561, 228, 667, 352]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.763994, ""bbox"": [737, 290, 801, 443]}]"
+340,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.820116, ""bbox"": [561, 228, 667, 352]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.762542, ""bbox"": [737, 290, 801, 443]}]"
+341,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.814032, ""bbox"": [573, 229, 681, 357]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790876, ""bbox"": [742, 289, 815, 455]}]"
+342,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.813904, ""bbox"": [574, 229, 681, 357]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790266, ""bbox"": [742, 288, 815, 455]}]"
+343,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.813753, ""bbox"": [574, 229, 681, 357]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.790992, ""bbox"": [742, 289, 815, 455]}]"
+344,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.828396, ""bbox"": [584, 231, 701, 360]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.787683, ""bbox"": [761, 291, 828, 461]}]"
+345,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.82879, ""bbox"": [584, 231, 701, 360]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.787568, ""bbox"": [761, 291, 828, 461]}]"
+346,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.82867, ""bbox"": [584, 231, 701, 360]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.786185, ""bbox"": [761, 291, 828, 460]}]"
+347,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.818766, ""bbox"": [765, 293, 844, 465]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.804719, ""bbox"": [602, 236, 718, 362]}]"
+348,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.819026, ""bbox"": [765, 293, 845, 466]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.80483, ""bbox"": [602, 236, 718, 362]}]"
+349,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.819033, ""bbox"": [765, 293, 844, 466]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.805137, ""bbox"": [602, 236, 718, 362]}]"
+350,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.826719, ""bbox"": [770, 299, 857, 465]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.811155, ""bbox"": [620, 240, 735, 367]}]"
+351,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.826686, ""bbox"": [770, 298, 857, 465]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.81088, ""bbox"": [620, 240, 735, 367]}]"
+352,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.827079, ""bbox"": [770, 299, 856, 465]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.807188, ""bbox"": [620, 240, 735, 367]}]"
+353,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823297, ""bbox"": [636, 242, 755, 369]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.788539, ""bbox"": [798, 305, 866, 466]}]"
+354,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823468, ""bbox"": [636, 242, 755, 369]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.788368, ""bbox"": [798, 305, 866, 466]}]"
+355,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823466, ""bbox"": [636, 242, 755, 369]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.788349, ""bbox"": [798, 305, 866, 466]}]"
+356,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.840416, ""bbox"": [652, 241, 773, 373]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.795222, ""bbox"": [806, 303, 877, 470]}]"
+357,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.840002, ""bbox"": [652, 241, 773, 373]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.795179, ""bbox"": [807, 303, 877, 470]}]"
+358,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.841005, ""bbox"": [652, 241, 774, 373]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794829, ""bbox"": [806, 303, 877, 470]}]"
+359,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.821547, ""bbox"": [667, 243, 788, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.765255, ""bbox"": [826, 303, 892, 475]}]"
+360,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.821583, ""bbox"": [667, 243, 788, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.765308, ""bbox"": [826, 303, 892, 475]}]"
+361,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.82095, ""bbox"": [668, 243, 788, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.76562, ""bbox"": [826, 303, 893, 474]}]"
+362,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.818747, ""bbox"": [684, 244, 809, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.795027, ""bbox"": [830, 305, 916, 475]}]"
+363,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.819179, ""bbox"": [684, 244, 809, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794933, ""bbox"": [830, 305, 916, 475]}]"
+364,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.821214, ""bbox"": [684, 244, 809, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.793942, ""bbox"": [830, 306, 916, 474]}]"
+365,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.81622, ""bbox"": [836, 311, 926, 476]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.814568, ""bbox"": [704, 248, 827, 380]}]"
+366,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.816291, ""bbox"": [836, 311, 926, 476]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.814776, ""bbox"": [704, 248, 827, 380]}]"
+367,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.816245, ""bbox"": [836, 311, 926, 476]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.815089, ""bbox"": [703, 248, 827, 379]}]"
+368,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.824932, ""bbox"": [721, 251, 847, 384]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.759006, ""bbox"": [851, 313, 935, 485]}]"
+369,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.825826, ""bbox"": [721, 252, 847, 384]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.757011, ""bbox"": [852, 313, 935, 485]}]"
+370,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.824597, ""bbox"": [721, 251, 847, 384]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.760241, ""bbox"": [849, 313, 936, 486]}]"
+371,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.82219, ""bbox"": [740, 255, 862, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.774598, ""bbox"": [871, 316, 944, 519]}]"
+372,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.822042, ""bbox"": [740, 255, 862, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.774694, ""bbox"": [871, 316, 944, 519]}]"
+373,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.822203, ""bbox"": [740, 255, 862, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.775225, ""bbox"": [871, 316, 944, 519]}]"
+374,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.83897, ""bbox"": [757, 255, 884, 389]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.775805, ""bbox"": [889, 319, 960, 516]}]"
+375,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.838977, ""bbox"": [757, 255, 884, 389]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.774806, ""bbox"": [889, 319, 960, 516]}]"
+376,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.839265, ""bbox"": [757, 255, 884, 389]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.773961, ""bbox"": [889, 319, 960, 517]}]"
+377,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.828794, ""bbox"": [770, 256, 900, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.811873, ""bbox"": [899, 321, 981, 500]}]"
+378,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.828807, ""bbox"": [770, 256, 900, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.811867, ""bbox"": [899, 321, 981, 500]}]"
+379,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.828652, ""bbox"": [770, 256, 900, 390]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.811575, ""bbox"": [899, 321, 981, 500]}]"
+380,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823645, ""bbox"": [788, 258, 919, 394]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.808594, ""bbox"": [909, 328, 996, 508]}]"
+381,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823533, ""bbox"": [788, 258, 919, 394]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.808678, ""bbox"": [909, 328, 996, 508]}]"
+382,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.823481, ""bbox"": [788, 257, 919, 394]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.809236, ""bbox"": [909, 328, 996, 508]}]"
+383,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.82072, ""bbox"": [807, 260, 936, 392]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.77026, ""bbox"": [946, 329, 1005, 506]}]"
+384,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.820877, ""bbox"": [807, 260, 936, 392]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.770366, ""bbox"": [946, 329, 1005, 506]}]"
+385,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.8211, ""bbox"": [807, 259, 937, 392]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.770835, ""bbox"": [946, 329, 1005, 506]}]"
+386,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.820118, ""bbox"": [826, 259, 954, 393]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.756652, ""bbox"": [949, 331, 1022, 510]}]"
+387,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.819906, ""bbox"": [826, 259, 954, 393]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.756463, ""bbox"": [949, 332, 1022, 510]}]"
+388,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.820345, ""bbox"": [826, 259, 954, 393]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.757041, ""bbox"": [949, 332, 1022, 510]}]"
+389,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.811113, ""bbox"": [843, 256, 968, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.768754, ""bbox"": [961, 324, 1040, 510]}]"
+390,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.811701, ""bbox"": [843, 256, 968, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.768813, ""bbox"": [961, 324, 1040, 510]}]"
+391,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.812899, ""bbox"": [843, 256, 968, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.767513, ""bbox"": [960, 324, 1040, 510]}]"
+392,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.813085, ""bbox"": [861, 260, 985, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.7793, ""bbox"": [966, 348, 1055, 523]}]"
+393,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.812841, ""bbox"": [861, 260, 985, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.78007, ""bbox"": [966, 348, 1055, 523]}]"
+394,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.812817, ""bbox"": [861, 260, 985, 395]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.778906, ""bbox"": [966, 348, 1055, 523]}]"
+395,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.806591, ""bbox"": [876, 262, 999, 396]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.729117, ""bbox"": [994, 354, 1069, 528]}]"
+396,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.806096, ""bbox"": [876, 262, 1000, 396]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.729429, ""bbox"": [994, 354, 1069, 528]}]"
+397,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.807187, ""bbox"": [876, 262, 1000, 396]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.726967, ""bbox"": [994, 355, 1069, 529]}]"
+398,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.802838, ""bbox"": [893, 264, 1011, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.782079, ""bbox"": [1021, 360, 1092, 523]}]"
+399,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.80284, ""bbox"": [893, 264, 1011, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.782069, ""bbox"": [1021, 360, 1092, 523]}]"
+400,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.804364, ""bbox"": [893, 264, 1011, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.78314, ""bbox"": [1021, 360, 1092, 523]}]"
+401,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.80032, ""bbox"": [909, 267, 1024, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.793949, ""bbox"": [1022, 356, 1110, 529]}]"
+402,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.799867, ""bbox"": [909, 267, 1024, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.793769, ""bbox"": [1022, 356, 1110, 529]}]"
+403,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.796904, ""bbox"": [909, 267, 1024, 397]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.794256, ""bbox"": [1022, 356, 1110, 529]}]"
+404,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.795473, ""bbox"": [927, 268, 1032, 399]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.789418, ""bbox"": [1048, 358, 1124, 537]}]"
+405,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.79545, ""bbox"": [927, 268, 1032, 399]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.789323, ""bbox"": [1048, 358, 1124, 537]}]"
+406,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.794042, ""bbox"": [927, 269, 1032, 399]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.789991, ""bbox"": [1048, 358, 1124, 537]}]"
+407,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.792939, ""bbox"": [1069, 363, 1135, 542]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.783637, ""bbox"": [942, 268, 1049, 396]}]"
+408,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.793162, ""bbox"": [1069, 363, 1135, 542]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.783528, ""bbox"": [942, 268, 1049, 396]}]"
+409,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.793239, ""bbox"": [1069, 364, 1135, 542]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.783851, ""bbox"": [942, 268, 1049, 396]}]"
+410,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.780736, ""bbox"": [1085, 366, 1152, 538]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.775341, ""bbox"": [958, 267, 1059, 405]}]"
+411,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.780693, ""bbox"": [1085, 366, 1152, 538]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.775044, ""bbox"": [958, 267, 1059, 405]}]"
+412,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.780888, ""bbox"": [1085, 366, 1152, 538]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.775263, ""bbox"": [958, 268, 1059, 405]}]"
+413,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.809171, ""bbox"": [1092, 371, 1173, 539]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.793175, ""bbox"": [972, 267, 1068, 398]}]"
+414,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.809467, ""bbox"": [1092, 371, 1173, 539]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.79229, ""bbox"": [972, 267, 1068, 398]}]"
+415,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.809808, ""bbox"": [1092, 371, 1173, 539]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.791894, ""bbox"": [972, 267, 1068, 398]}]"
+416,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.783722, ""bbox"": [1130, 374, 1186, 549]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.782303, ""bbox"": [984, 267, 1077, 400]}]"
+417,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.783594, ""bbox"": [1130, 374, 1186, 549]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.78196, ""bbox"": [984, 267, 1077, 400]}]"
+418,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.783004, ""bbox"": [1130, 374, 1186, 548]}, {""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.780689, ""bbox"": [984, 267, 1077, 400]}]"
+419,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.768795, ""bbox"": [995, 269, 1084, 398]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753351, ""bbox"": [1144, 377, 1201, 550]}]"
+420,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.768795, ""bbox"": [995, 269, 1084, 398]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753705, ""bbox"": [1144, 377, 1201, 550]}]"
+421,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.76936, ""bbox"": [995, 269, 1084, 398]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.753158, ""bbox"": [1145, 377, 1201, 550]}]"
+422,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.75855, ""bbox"": [1155, 379, 1220, 559]}]"
+423,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.75882, ""bbox"": [1155, 379, 1220, 559]}]"
+424,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.75875, ""bbox"": [1155, 379, 1220, 559]}]"
+425,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.777736, ""bbox"": [1165, 380, 1239, 563]}]"
+426,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.777791, ""bbox"": [1165, 380, 1239, 563]}]"
+427,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.778002, ""bbox"": [1165, 380, 1239, 563]}]"
+428,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.736804, ""bbox"": [1181, 392, 1257, 566]}]"
+429,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.737301, ""bbox"": [1182, 392, 1257, 566]}]"
+430,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.73461, ""bbox"": [1181, 392, 1257, 566]}]"
+431,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.740945, ""bbox"": [1190, 399, 1268, 570]}]"
+432,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.740936, ""bbox"": [1190, 399, 1268, 570]}]"
+433,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.741502, ""bbox"": [1190, 399, 1268, 570]}]"
+434,[]
+435,[]
+436,[]
+437,[]
+438,[]
+439,[]
+440,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.739736, ""bbox"": [1243, 407, 1313, 571]}]"
+441,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.737703, ""bbox"": [1243, 407, 1314, 571]}]"
+442,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.737938, ""bbox"": [1243, 407, 1314, 571]}]"
+443,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.705291, ""bbox"": [1262, 405, 1329, 586]}]"
+444,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.705142, ""bbox"": [1262, 405, 1329, 586]}]"
+445,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.704516, ""bbox"": [1262, 405, 1329, 586]}]"
+446,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.717219, ""bbox"": [1282, 415, 1346, 595]}]"
+447,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.7176, ""bbox"": [1282, 415, 1345, 595]}]"
+448,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.717679, ""bbox"": [1282, 415, 1345, 595]}]"
+449,[]
+450,[]
+451,[]
+452,[]
+453,[]
+454,[]
+455,[]
+456,[]
+457,[]
+458,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.748156, ""bbox"": [1309, 434, 1402, 612]}]"
+459,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.747929, ""bbox"": [1309, 434, 1402, 612]}]"
+460,"[{""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.747758, ""bbox"": [1309, 434, 1402, 612]}]"
+461,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.75452, ""bbox"": [1099, 247, 1150, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.721236, ""bbox"": [1348, 441, 1421, 619]}]"
+462,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.754733, ""bbox"": [1099, 247, 1150, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.721238, ""bbox"": [1348, 441, 1421, 619]}]"
+463,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.754402, ""bbox"": [1099, 247, 1150, 374]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.721093, ""bbox"": [1348, 441, 1421, 619]}]"
+464,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.760737, ""bbox"": [1104, 244, 1151, 370]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.744502, ""bbox"": [1357, 447, 1433, 625]}]"
+465,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.76094, ""bbox"": [1104, 244, 1151, 370]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.744637, ""bbox"": [1357, 447, 1433, 625]}]"
+466,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.76314, ""bbox"": [1104, 244, 1152, 370]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.744438, ""bbox"": [1357, 447, 1433, 625]}]"
+467,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.774353, ""bbox"": [1107, 242, 1154, 367]}]"
+468,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.774451, ""bbox"": [1107, 242, 1154, 367]}]"
+469,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.774473, ""bbox"": [1107, 242, 1154, 367]}]"
+470,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.758647, ""bbox"": [1109, 241, 1155, 363]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.701887, ""bbox"": [1385, 455, 1438, 625]}]"
+471,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.758565, ""bbox"": [1109, 241, 1155, 363]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.701834, ""bbox"": [1385, 455, 1438, 625]}]"
+472,"[{""class_id"": 0, ""class_name"": ""Cyclist"", ""confidence"": 0.758565, ""bbox"": [1109, 241, 1155, 363]}, {""class_id"": 1, ""class_name"": ""Pedestrian"", ""confidence"": 0.701834, ""bbox"": [1385, 455, 1438, 625]}]"
+473,[]
+474,[]
+475,[]
+476,[]
+477,[]
+478,[]
+479,[]
+480,[]
+481,[]
+482,[]
+483,[]
+484,[]
+485,[]
+486,[]
+487,[]
+488,[]
+489,[]
+490,[]
+491,[]
+492,[]
+493,[]
+494,[]
+495,[]
+496,[]
+497,[]
+498,[]
+499,[]
+500,[]
+501,[]
+502,[]
+503,[]
+504,[]
+505,[]
+506,[]
+507,[]
+508,[]
+509,[]
+510,[]
+511,[]
+512,[]
+513,[]
+514,[]
+515,[]
+516,[]
+517,[]
+518,[]
+519,[]
+520,[]
+521,[]
+522,[]
+523,[]
+524,[]
+525,[]
+526,[]
+527,[]
+528,[]
+529,[]
+530,[]
+531,[]
+532,[]
+533,[]
+534,[]
+535,[]
+536,[]
+537,[]
+538,[]
+539,[]
+540,[]
+541,[]
+542,[]
+543,[]

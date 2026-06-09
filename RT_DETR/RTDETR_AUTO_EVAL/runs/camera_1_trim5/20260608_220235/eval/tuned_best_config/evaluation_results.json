@@ -1,0 +1,24 @@
+{
+  "iou_threshold": 0.5,
+  "mAP": 0.7673,
+  "classes": {
+    "Cyclist": {
+      "ap": 0.8182,
+      "precision": 1.0,
+      "recall": 0.8035
+    },
+    "Pedestrian": {
+      "ap": 0.7164,
+      "precision": 0.8771,
+      "recall": 0.7841
+    }
+  },
+  "iou_stats": {
+    "n_matched": 481,
+    "mean": 0.7593,
+    "median": 0.7774,
+    "min": 0.5016,
+    "max": 0.9613,
+    "pct_above_75": 0.6175
+  }
+}

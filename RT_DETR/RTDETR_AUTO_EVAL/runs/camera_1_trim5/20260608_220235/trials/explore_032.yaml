@@ -1,0 +1,88 @@
+model: C:\Users\shaya\Documents\GitHub\Cyclist-detection-using-YOLO\RT_DETR\pdx_finetuned_rtdetr.pt
+input: ''
+output: ''
+inference:
+  confidence: 0.52
+  iou: 0.63
+  half: false
+  compile: false
+  imgsz: 0
+  downscale_width: 640
+  downscale_height: 360
+passes:
+  top_region:
+    enabled: true
+    ratio: 0.63
+    imgsz: 0
+    confidence: null
+  sahi:
+    enabled: false
+    y_max_fraction: 0.55
+    prescale: 1.5
+    tile_size: 200
+    tile_overlap: 0.3
+    tile_interval: 2
+    imgsz: 0
+    confidence: null
+  warp:
+    enabled: true
+    src_points:
+    - - 381
+      - 60
+    - - 823
+      - 101
+    - - 667
+      - 401
+    - - 18
+      - 173
+    dst_size:
+    - 960
+    - 480
+    confidence: null
+    imgsz: 0
+nms:
+  hard_iou: 0.19
+  containment_fraction: 0.44
+  crowd_mode: soft-nms
+  soft_nms_iou: 0.27
+  soft_nms_sigma: 0.38
+classes:
+- id: 0
+  name: Cyclist
+  color:
+  - 0
+  - 255
+  - 0
+  text_color:
+  - 0
+  - 0
+  - 0
+  min_confidence: 0.65
+  tracker:
+    max_age: 17
+    n_init: 4
+    max_iou_distance: 0.93
+    nms_max_overlap: 0.15
+    max_cosine_distance: 0.48
+    embedder: mobilenet
+- id: 1
+  name: Pedestrian
+  color:
+  - 255
+  - 0
+  - 0
+  text_color:
+  - 255
+  - 255
+  - 255
+  min_confidence: 0.72
+  tracker:
+    max_age: 23
+    n_init: 2
+    max_iou_distance: 0.54
+    nms_max_overlap: 0.15
+    max_cosine_distance: 0.44
+    embedder: mobilenet
+debug:
+  log_detections: false
+  inference_only: false
