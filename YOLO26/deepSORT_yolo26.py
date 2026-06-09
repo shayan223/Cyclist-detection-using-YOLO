@@ -598,8 +598,8 @@ def process_video(
 
     # --- Video writer with codec fallbacks ---
     output_dir = os.path.dirname(output_video_path)
-    if output_dir and not os.path.exists(output_dir):
-        raise RuntimeError(f"Output directory does not exist: {output_dir}")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     requested_ext  = os.path.splitext(output_video_path)[1].lower()
     requested_base = os.path.splitext(output_video_path)[0] if requested_ext else output_video_path

@@ -280,8 +280,8 @@ def process_video(
     pedestrian_ids_seen = set()
 
     output_dir = os.path.dirname(output_video_path)
-    if output_dir and not os.path.exists(output_dir):
-        raise RuntimeError(f"Output directory does not exist: {output_dir}")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
