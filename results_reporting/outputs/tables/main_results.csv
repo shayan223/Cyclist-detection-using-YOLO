@@ -1,0 +1,4 @@
+Experiment,Experiment ID,Type,Score,mAP,Cyclist AP,Cyclist Precision,Cyclist Recall,Pedestrian AP,Pedestrian Precision,Pedestrian Recall,Mean IoU,Median IoU,IoU >= 0.75,Matched Boxes
+Bare bones,bare_bones,detector_only,0.54175,0.5418,0.3636,1.0,0.3695,0.7199,0.9139,0.7235,0.7392,0.7536,0.5174,317
+Manual Trim 5,manual_trim5,manual_config,0.5851,0.5851,0.4545,1.0,0.4457,0.7157,0.8095,0.7727,0.7447,0.7597,0.5365,356
+AUTO_EVAL tuned,tuned_best_config,best_config_rerun,0.7673,0.7673,0.8182,1.0,0.8035,0.7164,0.8771,0.7841,0.7593,0.7774,0.6175,481

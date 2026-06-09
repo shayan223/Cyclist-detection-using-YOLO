@@ -1,0 +1,24 @@
+{
+  "copied_at_utc": "2026-06-09T17:24:57.534680+00:00",
+  "source_dir": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos",
+  "videos": [
+    {
+      "name": "bare_bones.mp4",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\bare_bones.mp4",
+      "report_copy": "results_reporting\\outputs\\videos\\bare_bones.mp4",
+      "bytes": 11292973
+    },
+    {
+      "name": "manual_trim5.mp4",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\manual_trim5.mp4",
+      "report_copy": "results_reporting\\outputs\\videos\\manual_trim5.mp4",
+      "bytes": 11860123
+    },
+    {
+      "name": "tuned_best_config.mp4",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\tuned_best_config.mp4",
+      "report_copy": "results_reporting\\outputs\\videos\\tuned_best_config.mp4",
+      "bytes": 12073594
+    }
+  ]
+}

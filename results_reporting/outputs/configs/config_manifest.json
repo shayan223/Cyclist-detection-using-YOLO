@@ -1,0 +1,21 @@
+{
+  "copied_at_utc": "2026-06-09T17:24:57.500655+00:00",
+  "source_dir": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs",
+  "configs": [
+    {
+      "name": "bare_bones.yaml",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\bare_bones.yaml",
+      "report_copy": "results_reporting\\outputs\\configs\\bare_bones.yaml"
+    },
+    {
+      "name": "manual_trim5.yaml",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\manual_trim5.yaml",
+      "report_copy": "results_reporting\\outputs\\configs\\manual_trim5.yaml"
+    },
+    {
+      "name": "tuned_best_config.yaml",
+      "source": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\tuned_best_config.yaml",
+      "report_copy": "results_reporting\\outputs\\configs\\tuned_best_config.yaml"
+    }
+  ]
+}

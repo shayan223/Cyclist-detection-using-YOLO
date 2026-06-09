@@ -1,0 +1,61 @@
+{
+  "generated_at_utc": "2026-06-09T17:24:59.191359+00:00",
+  "run_dir": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235",
+  "source_files": {
+    "summary": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\summary.csv",
+    "leaderboard": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\trials\\trial_leaderboard.json",
+    "top_params": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\trials\\top_params.json",
+    "trial_manifest": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\trials\\manifest.json",
+    "ground_truth": "RT_DETR\\RTDETR_AUTO_EVAL\\data\\camera_1\\ground_truth.csv",
+    "manual_predictions": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\predictions\\manual_trim5_rtdetr.csv",
+    "tuned_predictions": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\predictions\\tuned_best_config_rtdetr.csv",
+    "manual_eval": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\eval\\manual_trim5\\evaluation_results.json",
+    "tuned_eval": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\eval\\tuned_best_config\\evaluation_results.json",
+    "config_bare_bones": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\bare_bones.yaml",
+    "config_manual_trim5": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\manual_trim5.yaml",
+    "config_tuned_best_config": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\configs\\tuned_best_config.yaml",
+    "video_bare_bones": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\bare_bones.mp4",
+    "video_manual_trim5": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\manual_trim5.mp4",
+    "video_tuned_best_config": "RT_DETR\\RTDETR_AUTO_EVAL\\runs\\camera_1_trim5\\20260608_220235\\videos\\tuned_best_config.mp4"
+  },
+  "generated_files": [
+    "results_reporting\\outputs\\tables\\main_results.csv",
+    "results_reporting\\outputs\\tables\\main_results.tex",
+    "results_reporting\\outputs\\tables\\main_results_deltas.csv",
+    "results_reporting\\outputs\\tables\\top_trials.csv",
+    "results_reporting\\outputs\\tables\\top_trials.tex",
+    "results_reporting\\outputs\\tables\\best_config_params.csv",
+    "results_reporting\\outputs\\tables\\best_config_params.tex",
+    "results_reporting\\outputs\\configs\\bare_bones.yaml",
+    "results_reporting\\outputs\\configs\\manual_trim5.yaml",
+    "results_reporting\\outputs\\configs\\tuned_best_config.yaml",
+    "results_reporting\\outputs\\configs\\config_manifest.json",
+    "results_reporting\\outputs\\videos\\bare_bones.mp4",
+    "results_reporting\\outputs\\videos\\manual_trim5.mp4",
+    "results_reporting\\outputs\\videos\\tuned_best_config.mp4",
+    "results_reporting\\outputs\\videos\\video_manifest.json",
+    "results_reporting\\outputs\\figures\\aggregate_metrics.png",
+    "results_reporting\\outputs\\figures\\manual_vs_tuned_deltas.png",
+    "results_reporting\\outputs\\figures\\iou_comparison.png",
+    "results_reporting\\outputs\\figures\\search_scores.png",
+    "results_reporting\\outputs\\figures\\top_trial_params_heatmap.png",
+    "results_reporting\\outputs\\manifest.json"
+  ],
+  "headline_metrics": {
+    "manual_mAP": 0.5851,
+    "tuned_mAP": 0.7673,
+    "mAP_absolute_delta": 0.18220000000000003,
+    "mAP_percent_delta": 31.13997607246625,
+    "manual_cyclist_ap": 0.4545,
+    "tuned_cyclist_ap": 0.8182,
+    "manual_cyclist_recall": 0.4457,
+    "tuned_cyclist_recall": 0.8035,
+    "best_trial": "exploit_019",
+    "best_trial_score": 0.7673,
+    "sweep_best_reproduced": true
+  },
+  "notes": [
+    "All figures are generated programmatically from suite CSV/JSON artifacts.",
+    "The detector checkpoint is unchanged; this report evaluates YAML/inference-parameter tuning."
+  ]
+}
