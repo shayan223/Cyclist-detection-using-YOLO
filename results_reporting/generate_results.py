@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate reproducible tables and figures for the RT-DETR AUTO_EVAL suite."""
+"""Generate reproducible tables and figures for the RT-DETR tuning suite."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ REPORT_VIDEOS = ["bare_bones.mp4", "manual_trim5.mp4", "tuned_best_config.mp4"]
 EXPERIMENT_LABELS = {
     "bare_bones": "Bare bones",
     "manual_trim5": "Manual Trim 5",
-    "tuned_best_config": "AUTO_EVAL tuned",
+    "tuned_best_config": "Auto-Tuned",
 }
 COLORS = {
     "bare_bones": "#6C757D",
@@ -62,7 +62,7 @@ COLORS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate reproducible results tables and plots for the completed AUTO_EVAL suite."
+        description="Generate reproducible results tables and plots for the completed RT-DETR tuning suite."
     )
     parser.add_argument(
         "--run-dir",
@@ -259,7 +259,7 @@ def make_delta_table(summary: pd.DataFrame) -> pd.DataFrame:
             {
                 "Metric": label,
                 "Manual Trim 5": manual_value,
-                "AUTO_EVAL tuned": tuned_value,
+                "Auto-Tuned": tuned_value,
                 "Absolute Delta": delta,
                 "Percent Delta": percent,
             }
@@ -511,9 +511,9 @@ def plot_manual_vs_tuned_deltas(summary: pd.DataFrame, out_path: Path) -> None:
     ax.set_xlim(-0.18, 1.55)
     ax.set_ylim(0.35, 1.04)
     ax.set_xticks(x)
-    ax.set_xticklabels(["Manual Trim 5", "AUTO_EVAL tuned"])
+    ax.set_xticklabels(["Manual Trim 5", "Auto-Tuned"])
     ax.set_ylabel("Metric value")
-    ax.set_title("Manual vs Tuned Class Metric Changes")
+    ax.set_title("Manual vs Auto-Tuned Class Metric Changes")
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
@@ -535,17 +535,17 @@ def plot_iou_comparison(manual_ious: list[float], tuned_ious: list[float], out_p
         bins=bins,
         alpha=0.55,
         color=COLORS["tuned_best_config"],
-        label=f"AUTO_EVAL tuned (n={len(tuned_ious)})",
+        label=f"Auto-Tuned (n={len(tuned_ious)})",
     )
     for values, color, label in [
         (manual_ious, COLORS["manual_trim5"], "Manual median"),
-        (tuned_ious, COLORS["tuned_best_config"], "Tuned median"),
+        (tuned_ious, COLORS["tuned_best_config"], "Auto-Tuned median"),
     ]:
         ax.axvline(np.median(values), color=color, linestyle="--", linewidth=2, label=label)
     ax.axvline(0.75, color="#333333", linestyle=":", linewidth=2, label="IoU 0.75")
     ax.set_xlabel("Matched-box IoU")
     ax.set_ylabel("Count")
-    ax.set_title("Manual vs Tuned IoU Distribution")
+    ax.set_title("Manual vs Auto-Tuned IoU Distribution")
     ax.grid(axis="y", alpha=0.25)
     ax.legend(frameon=False)
     fig.tight_layout()
@@ -590,7 +590,7 @@ def plot_search_scores(leaderboard: list[dict[str, Any]], out_path: Path) -> Non
     )
     ax.set_xlabel("Trial order")
     ax.set_ylabel("Score")
-    ax.set_title("AUTO_EVAL Search Scores Across Trials")
+    ax.set_title("Two-Phase Configuration Search Scores")
     ax.grid(axis="y", alpha=0.25)
     ax.legend(frameon=False)
     fig.tight_layout()

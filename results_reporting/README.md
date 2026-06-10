@@ -117,7 +117,7 @@ Videos:
 ## Central result
 
 The report package is centered on the comparison between the manual Trim 5
-configuration and the AUTO_EVAL-tuned configuration. The expected headline
+configuration and the Auto-Tuned configuration. The expected headline
 metrics from `summary.csv` are:
 
 - Manual mAP: `0.5851`

@@ -1,0 +1,67 @@
+Technical Paper Guidelines
+Expected structure and technical content guidelines for ICAISF paper submissions.
+
+Title
+The title should be compact, specific, and directly relevant to the research problem. It should clearly indicate the main idea, proposed method, and application area where applicable. Avoid vague, overly long, or general titles.
+
+Abstract
+The abstract should briefly summarize the problem, proposed method, major contribution, and key findings. It should be concise and focused, preferably within one short paragraph. Do not include citations, equations, or special characters.
+
+Keywords
+Keywords should be written in one line only. Include 4 to 6 relevant terms that represent the research area, method, dataset/domain, and application.
+
+Introduction
+Do not use subheadings inside the introduction. Write two to three connected paragraphs:
+
+Paragraph 1: Introduce the broader research area and its importance.
+Paragraph 2: Explain the specific research problem, limitations of existing work, and the research gap.
+Paragraph 3: Briefly introduce the proposed work.
+After these paragraphs, include a short bulleted list of research objectives and another short bulleted list of major contributions. End with a brief paper organisation paragraph.
+Related Work
+Do not use subheadings inside the related work section. Critically analyze at least 12–15 recent and relevant research papers. The discussion should compare methods, datasets, strengths, limitations, and research gaps. Avoid writing only descriptive summaries of papers.
+
+A compact comparison table may be included if useful, with columns such as: Reference | Method | Dataset | Contribution | Limitation.
+Materials and Methods
+This section may include subsections. It should clearly explain how the research was conducted and provide enough technical detail for reproducibility.
+
+Dataset Description
+Describe the dataset source, size, features, classes/categories, data format, preprocessing steps, and any data split used for training, validation, and testing.
+
+Proposed Methodology
+Explain the complete workflow of the proposed approach from input to output. Include a block diagram, flowchart, or system architecture diagram where possible. Clearly explain each major step, model, framework, or technique used.
+
+Algorithm or Pseudocode
+If the paper includes a computational method, model pipeline, or decision-making procedure, include an algorithm or pseudocode. Clearly mention input, processing steps, and output.
+
+Implementation Details
+Briefly describe the programming language, tools, libraries, frameworks, hardware, operating system, GPU/CPU, RAM, or cloud environment used for implementation.
+
+Experimental Results
+This section should present the strongest evidence of the proposed work. It may include the following subsections:
+
+Experimental Setup
+Briefly explain how experiments were conducted. Mention dataset split, training/testing protocol, validation strategy, baseline methods, parameter settings, and hardware/software setup.
+
+Evaluation Metrics
+Select metrics appropriate to the research problem:
+
+Classification: Accuracy, Precision, Recall, F1-score, Confusion Matrix, ROC-AUC, Specificity
+Regression: MAE, MSE, RMSE, R-squared
+Detection / Segmentation: IoU, mAP, Dice Score, Pixel Accuracy
+Include formulas where necessary.
+
+Results and Comparative Analysis
+Clearly present results using tables, figures, graphs, confusion matrices, or qualitative examples. Compare the proposed method with baseline methods. This part must clearly show the improvement, effectiveness, or usefulness of the proposed method.
+
+Error Analysis and Discussion
+Discuss failure cases, limitations, unusual results, and technical reasons behind observed performance. Do not only repeat values from tables. Explain why the method performed well or poorly and what the findings mean.
+
+Conclusion
+Write the conclusion as one compact paragraph. It should summarize the research problem, proposed approach, major achievements, and significance of the results. Mention future work briefly within the same paragraph. Do not create a separate Future Work section.
+
+References
+References must follow IEEE numerical citation style. Each reference should include complete details: author names, paper title, journal or conference name, volume, issue, pages, year, DOI, and URL where available. References must be numbered in the order they appear in the paper.
+
+[1] A. Author, B. Author, and C. Author, "Title of the research paper," Journal Name, vol. 10, no. 2, pp. 100–110, 2024, doi: 10.xxxx/xxxxx.
+[2] A. Author and B. Author, "Title of the conference paper," in Proc. International Conference Name, City, Country, 2023, pp. 50–55, doi: 10.xxxx/xxxxx.
+[3] A. Author, "Title of online article or technical report," Organization or Publisher Name, 2024. [Online]. Available: URL

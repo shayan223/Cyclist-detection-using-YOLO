@@ -1,0 +1,93 @@
+Cited Sources for Cyclist Detection Paper
+==========================================
+
+This file lists every source cited in the paper, with direct links.
+
+---
+
+[1] YOLO (You Only Look Once)
+    Title:    You Only Look Once: Unified, Real-Time Object Detection
+    Authors:  Joseph Redmon, Santosh Divvala, Ross Girshick, Ali Farhadi
+    Venue:    CVPR 2016
+    Link:     https://arxiv.org/abs/1506.02640
+
+[2] RT-DETR
+    Title:    DETRs Beat YOLOs on Real-time Object Detection
+    Authors:  Yian Zhao, Wenyu Lv, Shangliang Xu, Jinman Wei, Guanzhong Wang,
+              Qingqing Dang, Yi Liu, Jie Chen
+    Venue:    CVPR 2024
+    Link:     https://arxiv.org/abs/2304.08069
+
+[3] RTMDet
+    Title:    RTMDet: An Empirical Study of Designing Real-Time Object Detectors
+    Authors:  Chengqi Lyu, Wenwei Zhang, Haian Huang, Yue Zhou, Yudong Wang,
+              Yanyi Liu, Shilong Zhang, Kai Chen
+    Year:     2022
+    Link:     https://arxiv.org/abs/2212.07784
+
+[4] SORT
+    Title:    Simple Online and Realtime Tracking
+    Authors:  Alex Bewley, Zongyuan Ge, Lionel Ott, Fabio Ramos, Ben Upcroft
+    Venue:    ICIP 2016
+    Link:     https://arxiv.org/abs/1602.00763
+
+[5] DeepSORT
+    Title:    Simple Online and Realtime Tracking with a Deep Association Metric
+    Authors:  Nicolai Wojke, Alex Bewley, Dietrich Paulus
+    Venue:    ICIP 2017
+    Link:     https://arxiv.org/abs/1703.07402
+
+[6] ByteTrack
+    Title:    ByteTrack: Multi-Object Tracking by Associating Every Detection Box
+    Authors:  Yifu Zhang, Peize Sun, Yi Jiang, Dongdong Yu, Fucheng Weng,
+              Zehuan Yuan, Ping Luo, Wenyu Liu, Xinggang Wang
+    Venue:    ECCV 2022
+    Link:     https://arxiv.org/abs/2110.06864
+
+[7] SAHI
+    Title:    Slicing Aided Hyper Inference and Fine-tuning for Small Object Detection
+    Authors:  Fatih Cagatay Akyon, Sinan Onur Altinuc, Alptekin Temizel
+    Venue:    ICIP 2022
+    Link:     https://arxiv.org/abs/2202.06934
+
+[8] Homography for Traffic Cameras
+    Title:    Monocular 3D Vehicle Detection Using Uncalibrated Traffic Cameras through Homography
+    Authors:  Minghan Zhu, Songan Zhang, Yuanxin Zhong, Pingping Lu,
+              Huei Peng, John Lenneman
+    Venue:    ICRA 2021
+    Link:     https://arxiv.org/abs/2103.15293
+
+[9] PET (Post-Encroachment Time)
+    Title:    Modelling the Relationship Between Post Encroachment Time and Signal Timings Using UAV Video Data
+    Authors:  Zubayer Islam, Mohamed Abdel-Aty, Amrita Goswamy,
+              Amr Abdelraouf, Ou Zheng
+    Venue:    Transportation Research Record, 2022
+    Link:     https://arxiv.org/abs/2210.05044
+
+[10] DETR
+     Title:   End-to-End Object Detection with Transformers
+     Authors: Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nicolas Usunier,
+              Alexander Kirillov, Sergey Zagoruyko
+     Venue:   ECCV 2020
+     Link:    https://arxiv.org/abs/2005.12872
+
+[11] EuroCity Persons Dataset
+     Title:   The EuroCity Persons Dataset: A Novel Benchmark for Object Detection
+     Authors: Markus Braun, Sebastian Krebs, Fabian Flohr, Dariu M. Gavrila
+     Venue:   IEEE Transactions on Pattern Analysis and Machine Intelligence, 2021
+     Link:    https://arxiv.org/abs/1805.07193
+
+[12] COCO Dataset
+     Title:   Microsoft COCO: Common Objects in Context
+     Authors: Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+              Pietro Perona, Deva Ramanan, Piotr Dollar, C. Lawrence Zitnick
+     Venue:   ECCV 2014
+     Link:    https://arxiv.org/abs/1405.0312
+
+[13] Cityscapes Dataset
+     Title:   The Cityscapes Dataset for Semantic Urban Scene Understanding
+     Authors: Marius Cordts, Mohamed Omran, Sebastian Ramos, Timo Rehfeld,
+              Markus Enzweiler, Rodrigo Benenson, Uwe Franke, Stefan Roth,
+              Bernt Schiele
+     Venue:   CVPR 2016
+     Link:    https://arxiv.org/abs/1604.01685
