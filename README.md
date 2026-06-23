@@ -128,6 +128,11 @@ cd .\RT_DETR
 python .\PET_deepSORT.py --config .\config_trim5.yaml
 ```
 
+OR
+
+```
+python .\PET_deepSORT.py --config ./tuned_best_config_trim5.yaml --conflict-zone --track-speed --second-speed-line --show-direction-lines --line-warp --csv ./trim5_PET_eval_improved_config --speed-space auto --heatmap ./trim5_PET_eval_improved_config --speed-smoothing-alpha 0.2 --speed-smoothing-window 12
+```
 For single-cell PET analysis:
 
 ```powershell

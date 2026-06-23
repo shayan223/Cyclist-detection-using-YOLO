@@ -1100,6 +1100,17 @@ def _speed_unit_suffix(speed_unit):
     return "mph" if speed_unit == "mph" else "ft/s"
 
 
+
+def _smooth_speed_ft_per_sec(raw_speed_ft_per_sec, previous_speed_ft_per_sec, alpha):
+    """Optionally smooth speed with EMA; alpha=0 disables EMA."""
+    if raw_speed_ft_per_sec is None:
+        return previous_speed_ft_per_sec
+    alpha = max(0.0, min(1.0, float(alpha)))
+    if alpha <= 0.0 or previous_speed_ft_per_sec is None:
+        return float(raw_speed_ft_per_sec)
+    return alpha * float(raw_speed_ft_per_sec) + (1.0 - alpha) * float(previous_speed_ft_per_sec)
+
+
 def _estimate_speed_ft_per_sec(points, fps):
     """Estimate speed from the last two trajectory points."""
     if fps <= 0 or len(points) < 2:
@@ -1134,6 +1145,211 @@ def _point_distance(a, b):
     return float(math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1])))
 
 
+
+def _coerce_point(point):
+    """Return a numeric 2D point tuple, or None when malformed."""
+    if point is None:
+        return None
+    try:
+        if len(point) != 2:
+            return None
+        return (float(point[0]), float(point[1]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _line_length_pixels(line):
+    start = _coerce_point(line.get("start")) if line else None
+    end = _coerce_point(line.get("end")) if line else None
+    return _point_distance(start, end)
+
+
+def _normalize_speed_lines(calibration, known_length_ft=52.0):
+    """
+    Normalize either the legacy single-line calibration or the new config block.
+
+    Endpoint order for four-point calibration is:
+    primary.start, primary.end, secondary.start, secondary.end.
+    """
+    calibration = calibration or {}
+    speed_lines = calibration.get("speed_lines", calibration)
+
+    primary = speed_lines.get("primary")
+    if primary is None and calibration.get("start") and calibration.get("end"):
+        primary = {
+            "start": calibration.get("start"),
+            "end": calibration.get("end"),
+            "length_ft": calibration.get("length_ft", known_length_ft),
+            "length_pixels": calibration.get("length_pixels"),
+            "feet_per_pixel": calibration.get("feet_per_pixel"),
+        }
+
+    if primary:
+        primary = dict(primary)
+        primary.setdefault("length_ft", known_length_ft)
+        length_pixels = primary.get("length_pixels") or _line_length_pixels(primary)
+        primary["length_pixels"] = float(length_pixels) if length_pixels else None
+        if primary["length_pixels"]:
+            primary["feet_per_pixel"] = float(primary.get("length_ft", known_length_ft)) / primary["length_pixels"]
+
+    secondary = speed_lines.get("secondary")
+    if secondary:
+        secondary = dict(secondary)
+        secondary.setdefault("length_ft", 72.0)
+        length_pixels = secondary.get("length_pixels") or _line_length_pixels(secondary)
+        secondary["length_pixels"] = float(length_pixels) if length_pixels else None
+        if secondary["length_pixels"]:
+            secondary["feet_per_pixel"] = float(secondary.get("length_ft", 72.0)) / secondary["length_pixels"]
+
+    enabled_for_speed = speed_lines.get("enabled_for_speed")
+    if enabled_for_speed is None:
+        enabled_for_speed = bool(secondary)
+
+    return {
+        "primary": primary,
+        "secondary": secondary,
+        "enabled_for_speed": bool(enabled_for_speed),
+        "enabled_for_warp": bool(speed_lines.get("enabled_for_warp", False)),
+        "world_points_ft": speed_lines.get("world_points_ft"),
+    }
+
+
+def _speed_line_endpoints(speed_lines):
+    primary = speed_lines.get("primary") or {}
+    secondary = speed_lines.get("secondary") or {}
+    points = [
+        _coerce_point(primary.get("start")),
+        _coerce_point(primary.get("end")),
+        _coerce_point(secondary.get("start")),
+        _coerce_point(secondary.get("end")),
+    ]
+    return points if all(p is not None for p in points) else None
+
+
+def _build_original_to_processing_transform(frame_width, frame_height, downscale_width, downscale_height):
+    """Map original-frame coordinates into the resized inference frame."""
+    if (
+        downscale_width > 0
+        and downscale_height > 0
+        and (frame_width > downscale_width or frame_height > downscale_height)
+    ):
+        sx = float(downscale_width) / float(frame_width)
+        sy = float(downscale_height) / float(frame_height)
+        return np.array([[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    return np.eye(3, dtype=np.float64)
+
+
+def _build_two_line_metric_transform(speed_lines, base_transform=None):
+    """
+    Build an affine metric transform from two measured image directions.
+
+    The returned matrix maps points into a local feet coordinate system. This is
+    intentionally conservative: it improves directional scale without replacing
+    a true projective ground-plane calibration.
+    """
+    endpoints = _speed_line_endpoints(speed_lines)
+    if not endpoints:
+        return None, "secondary speed line is incomplete."
+
+    primary = speed_lines.get("primary") or {}
+    secondary = speed_lines.get("secondary") or {}
+    primary_length_ft = float(primary.get("length_ft", 52.0))
+    secondary_length_ft = float(secondary.get("length_ft", 72.0))
+    if primary_length_ft <= 0 or secondary_length_ft <= 0:
+        return None, "speed line lengths must be positive."
+
+    transformed = []
+    for point in endpoints:
+        mapped = _transform_point_homography(point, base_transform) if base_transform is not None else point
+        if mapped is None:
+            return None, "could not transform speed line endpoints."
+        transformed.append(mapped)
+
+    primary_start, primary_end, secondary_start, secondary_end = transformed
+    v_primary = np.array(
+        [primary_end[0] - primary_start[0], primary_end[1] - primary_start[1]],
+        dtype=np.float64,
+    )
+    v_secondary = np.array(
+        [secondary_end[0] - secondary_start[0], secondary_end[1] - secondary_start[1]],
+        dtype=np.float64,
+    )
+    basis = np.column_stack([v_primary, v_secondary])
+    if abs(float(np.linalg.det(basis))) < 1e-6:
+        return None, "speed lines are parallel or too close to parallel."
+
+    scale = np.diag([primary_length_ft, secondary_length_ft])
+    metric_2x2 = scale @ np.linalg.inv(basis)
+    origin = np.array(primary_start, dtype=np.float64)
+    offset = -metric_2x2 @ origin
+    metric_H = np.array(
+        [
+            [metric_2x2[0, 0], metric_2x2[0, 1], offset[0]],
+            [metric_2x2[1, 0], metric_2x2[1, 1], offset[1]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    if base_transform is not None:
+        metric_H = metric_H @ np.asarray(base_transform, dtype=np.float64)
+    return metric_H, None
+
+
+def _world_points_to_dst_points(world_points_ft, dst_size):
+    """Map arbitrary world-foot coordinates into the configured warp output rectangle."""
+    points = [_coerce_point(p) for p in (world_points_ft or [])]
+    if len(points) != 4 or any(p is None for p in points):
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if abs(max_x - min_x) < 1e-6 or abs(max_y - min_y) < 1e-6:
+        return None
+    dw, dh = dst_size
+    return [
+        (
+            (x - min_x) / (max_x - min_x) * float(dw - 1),
+            (y - min_y) / (max_y - min_y) * float(dh - 1),
+        )
+        for x, y in points
+    ]
+
+
+def _build_line_warp_homography(speed_lines, dst_size, image_to_processing_H=None):
+    """
+    Build a detection-warp homography from the two speed-line endpoint pairs.
+
+    Requires four source endpoints and four matching world_points_ft values.
+    """
+    endpoints = _speed_line_endpoints(speed_lines)
+    if not endpoints:
+        return None, None, "line warp requested but primary/secondary endpoints are incomplete."
+    if not dst_size or len(dst_size) != 2:
+        return None, None, "line warp requested but dst_size is missing."
+
+    src_points = []
+    for point in endpoints:
+        mapped = _transform_point_homography(point, image_to_processing_H) if image_to_processing_H is not None else point
+        if mapped is None:
+            return None, None, "line warp could not map endpoints into processing coordinates."
+        src_points.append(mapped)
+
+    dst_points = _world_points_to_dst_points(speed_lines.get("world_points_ft"), dst_size)
+    if dst_points is None:
+        return None, None, "line warp requested but four valid world_points_ft are required."
+
+    try:
+        src = np.array(src_points, dtype=np.float32)
+        dst = np.array(dst_points, dtype=np.float32)
+        H = cv2.getPerspectiveTransform(src, dst)
+        H_inv = cv2.getPerspectiveTransform(dst, src)
+        return H, H_inv, None
+    except Exception as exc:
+        return None, None, f"line warp calibration failed: {exc}"
+
+
 def _build_speed_context(calibration, requested_speed_space, warp_H, known_length_ft=52.0):
     """
     Resolve speed estimation space and scale.
@@ -1147,8 +1363,37 @@ def _build_speed_context(calibration, requested_speed_space, warp_H, known_lengt
     if requested not in {"auto", "warp", "image"}:
         requested = "auto"
 
-    image_length = calibration.get("length_pixels")
-    image_fpp = calibration.get("feet_per_pixel")
+    speed_lines = _normalize_speed_lines(calibration, known_length_ft=known_length_ft)
+    primary = speed_lines.get("primary") or {}
+
+    if requested != "image" and speed_lines.get("secondary") and speed_lines.get("enabled_for_speed"):
+        base_transform = None
+        base_label = "image"
+        if requested == "warp":
+            if warp_H is None:
+                return None, "speed-space=warp requested but homography is unavailable. Continuing without speed output."
+            base_transform = warp_H
+            base_label = "warp"
+        elif requested == "auto" and warp_H is not None:
+            base_transform = warp_H
+            base_label = "warp"
+
+        metric_H, metric_warning = _build_two_line_metric_transform(speed_lines, base_transform)
+        if metric_H is not None:
+            return {
+                "space": f"ground_plane_{base_label}",
+                "feet_per_pixel": None,
+                "speed_scale": 1.0,
+                "calibration_length_pixels": float(primary.get("length_pixels") or 0.0),
+                "transform": metric_H,
+                "calibration": speed_lines,
+            }, None
+        if requested == "warp":
+            return None, f"{metric_warning} Continuing without speed output."
+        print(f"WARNING: {metric_warning} Falling back to single-line speed calibration.")
+
+    image_length = primary.get("length_pixels") or calibration.get("length_pixels")
+    image_fpp = primary.get("feet_per_pixel") or calibration.get("feet_per_pixel")
     if not image_length or image_length < 1e-6 or not image_fpp:
         return None, "speed calibration is invalid. Continuing without speed output."
 
@@ -1156,6 +1401,7 @@ def _build_speed_context(calibration, requested_speed_space, warp_H, known_lengt
         return {
             "space": "image",
             "feet_per_pixel": float(image_fpp),
+            "speed_scale": float(image_fpp),
             "calibration_length_pixels": float(image_length),
             "transform": None,
         }
@@ -1168,8 +1414,8 @@ def _build_speed_context(calibration, requested_speed_space, warp_H, known_lengt
             return None, "speed-space=warp requested but homography is unavailable. Continuing without speed output."
         return _image_context(), "speed-space=auto could not find a valid homography; falling back to image-space speed."
 
-    start_warp = _transform_point_homography(calibration.get("start"), warp_H)
-    end_warp = _transform_point_homography(calibration.get("end"), warp_H)
+    start_warp = _transform_point_homography(primary.get("start") or calibration.get("start"), warp_H)
+    end_warp = _transform_point_homography(primary.get("end") or calibration.get("end"), warp_H)
     warp_length = _point_distance(start_warp, end_warp)
     if warp_length is None or warp_length < 1e-6:
         if requested == "warp":
@@ -1179,12 +1425,12 @@ def _build_speed_context(calibration, requested_speed_space, warp_H, known_lengt
     return {
         "space": "warp",
         "feet_per_pixel": float(known_length_ft) / float(warp_length),
+        "speed_scale": float(known_length_ft) / float(warp_length),
         "calibration_length_pixels": float(warp_length),
         "transform": warp_H,
         "calibration_start": start_warp,
         "calibration_end": end_warp,
     }, None
-
 
 def _format_speed_label(speed_value, speed_unit):
     """Format a speed label for overlays."""
@@ -1192,6 +1438,30 @@ def _format_speed_label(speed_value, speed_unit):
         return None
     decimals = 1 if speed_unit == "mph" else 2
     return f"{speed_value:.{decimals}f} { _speed_unit_suffix(speed_unit) }"
+
+
+
+def _pet_speed_event_fields(name_a, speed_a_ft, name_b, speed_b_ft, speed_unit):
+    """Build explicit per-actor speed fields and speed deltas for PET rows."""
+    speed_key = speed_unit.replace("/", "_")
+    speeds_by_name = {
+        str(name_a).lower(): speed_a_ft,
+        str(name_b).lower(): speed_b_ft,
+    }
+    cyclist_speed_ft = speeds_by_name.get("cyclist")
+    pedestrian_speed_ft = speeds_by_name.get("pedestrian")
+    speed_diff_ft = None
+    if cyclist_speed_ft is not None and pedestrian_speed_ft is not None:
+        speed_diff_ft = abs(float(cyclist_speed_ft) - float(pedestrian_speed_ft))
+
+    return {
+        "cyclist_speed_ft_per_s": round(cyclist_speed_ft, 3) if cyclist_speed_ft is not None else None,
+        "pedestrian_speed_ft_per_s": round(pedestrian_speed_ft, 3) if pedestrian_speed_ft is not None else None,
+        "speed_difference_ft_per_s": round(speed_diff_ft, 3) if speed_diff_ft is not None else None,
+        f"cyclist_speed_{speed_key}": round(_speed_to_unit(cyclist_speed_ft, speed_unit), 3) if cyclist_speed_ft is not None else None,
+        f"pedestrian_speed_{speed_key}": round(_speed_to_unit(pedestrian_speed_ft, speed_unit), 3) if pedestrian_speed_ft is not None else None,
+        f"speed_difference_{speed_key}": round(_speed_to_unit(speed_diff_ft, speed_unit), 3) if speed_diff_ft is not None else None,
+    }
 
 
 def _draw_direction_arrow(frame, tlbr, vector, color):
@@ -1214,7 +1484,7 @@ def _draw_direction_arrow(frame, tlbr, vector, color):
     cv2.arrowedLine(frame, (cx, cy), end, color, 2, tipLength=0.35)
 
 
-def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration line"):
+def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration line", length_ft=52.0, label=None):
     """
     Prompt the user to draw a single calibration line.
 
@@ -1227,7 +1497,7 @@ def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration li
     """
     state = {"start": None, "end": None, "drawing": False}
     instructions = [
-        "Draw the full 52 ft bus-stop line: left-click + drag",
+        f"Draw the full {length_ft:g} ft {label or 'calibration'} line: left-click + drag",
         "C: clear   Enter/Space: confirm   Esc: cancel",
     ]
 
@@ -1284,7 +1554,8 @@ def _draw_measure_line_interactive(frame, window_name="Draw 52 ft calibration li
         "start": state["start"],
         "end": state["end"],
         "length_pixels": float(length_pixels),
-        "feet_per_pixel": 52.0 / float(length_pixels),
+        "length_ft": float(length_ft),
+        "feet_per_pixel": float(length_ft) / float(length_pixels),
     }
 
 
@@ -2127,6 +2398,7 @@ def process_video(
     single_cell_mode=False,
     deadzones=None,
     show_deadzones=False,
+    show_indicators=False,
     conflict_zone_polygon=None,
     parallel_angle_tolerance=15.0,
     trajectory_history=15,
@@ -2134,13 +2406,20 @@ def process_video(
     speed_unit="mph",
     hide_speed_overlay=False,
     speed_smoothing_window=5,
+    speed_smoothing_alpha=0.0,
     speed_space="auto",
+    line_warp=False,
     calibration=None,
     show_direction_lines=False,
 ):
     """Process video for trajectory-aware PET conflict analysis."""
     deadzones = deadzones or []
-    calibration = calibration or {}
+    cfg_calibration = cfg.get('calibration', {}) or {}
+    calibration = calibration or cfg_calibration or {}
+    if calibration and cfg_calibration.get("speed_lines") and not calibration.get("speed_lines"):
+        merged_calibration = dict(cfg_calibration)
+        merged_calibration.update(calibration)
+        calibration = merged_calibration
 
     inf_cfg = cfg.get('inference', {})
     pass_cfg = cfg.get('passes', {})
@@ -2178,13 +2457,6 @@ def process_video(
     warp_imgsz = warp_cfg.get('imgsz', 0) or None
     warp_src = warp_cfg.get('src_points')
     warp_dst_size = warp_cfg.get('dst_size')
-    if warp_src and warp_dst_size and len(warp_src) == 4:
-        warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
-        if warp_enabled:
-            print(f"Warp pass enabled: {warp_src} -> {warp_dst_size}")
-    elif warp_enabled:
-        print("WARNING: warp pass enabled but src_points/dst_size not configured. Warp pass disabled.")
-        warp_enabled = False
 
     nms_iou = nms_cfg.get('hard_iou', 0.45)
     nms_containment = nms_cfg.get('containment_fraction', 0.8)
@@ -2223,6 +2495,32 @@ def process_video(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    original_to_processing_H = _build_original_to_processing_transform(
+        width, height, downscale_width, downscale_height
+    )
+    speed_lines = _normalize_speed_lines(calibration)
+    line_warp_requested = bool(line_warp or speed_lines.get("enabled_for_warp"))
+    if line_warp_requested:
+        warp_H, warp_H_inv, line_warp_warning = _build_line_warp_homography(
+            speed_lines, warp_dst_size, original_to_processing_H
+        )
+        if line_warp_warning:
+            print(f"WARNING: {line_warp_warning} Falling back to passes.warp.src_points.")
+            warp_H = warp_H_inv = None
+        elif warp_enabled:
+            print("Warp pass enabled from calibration.speed_lines endpoints.")
+
+    if warp_H is None and warp_src and warp_dst_size and len(warp_src) == 4:
+        warp_H, warp_H_inv = _build_homography(warp_src, warp_dst_size)
+        if warp_enabled:
+            print(f"Warp pass enabled: {warp_src} -> {warp_dst_size}")
+    elif warp_H is None and warp_enabled:
+        print("WARNING: warp pass enabled but src_points/dst_size not configured. Warp pass disabled.")
+        warp_enabled = False
+
+    speed_warp_H = warp_H @ original_to_processing_H if warp_H is not None else None
+
     cell_w = width / grid_cols
     cell_h = height / grid_rows
     _sc_active = bool(single_cell_mode and selected_cell is not None)
@@ -2245,16 +2543,24 @@ def process_video(
     active_speed_space = None
 
     if track_speed:
-        speed_context, speed_warning = _build_speed_context(calibration, speed_space, warp_H)
+        speed_context, speed_warning = _build_speed_context(calibration, speed_space, speed_warp_H)
         if speed_warning:
             print(f"WARNING: {speed_warning}")
         if speed_context:
             active_speed_space = speed_context["space"]
             speed_feet_per_pixel = speed_context["feet_per_pixel"]
-            print(
-                f"Speed calibration active ({active_speed_space}): "
-                f"52 ft / {speed_context['calibration_length_pixels']:.1f}px"
-            )
+            if active_speed_space == "warp":
+                print(
+                    "Speed calibration active (warp): homography-corrected 52 ft line "
+                    f"/ {speed_context['calibration_length_pixels']:.1f}px in rectified space"
+                )
+            elif str(active_speed_space).startswith("ground_plane"):
+                print(f"Speed calibration active ({active_speed_space}): two-line metric ground-plane transform")
+            else:
+                print(
+                    f"Speed calibration active ({active_speed_space}): "
+                    f"52 ft / {speed_context['calibration_length_pixels']:.1f}px"
+                )
         else:
             track_speed = False
 
@@ -2293,6 +2599,7 @@ def process_video(
     track_histories = defaultdict(deque)
     track_speed_histories = defaultdict(lambda: deque(maxlen=max(1, int(speed_smoothing_window))))
     track_speeds_ft = {}
+    speed_smoothing_alpha = max(0.0, min(1.0, float(speed_smoothing_alpha)))
     active_region_visits = defaultdict(lambda: defaultdict(dict))
     closed_region_visits = defaultdict(lambda: defaultdict(list))
     event_signatures = set()
@@ -2437,9 +2744,9 @@ def process_video(
                     _prune_points(history, frame_count - history_frames)
 
                     speed_ft_per_sec = None
-                    if track_speed and speed_feet_per_pixel:
+                    if track_speed and speed_context:
                         speed_point = anchor
-                        if active_speed_space == "warp":
+                        if speed_context.get("transform") is not None:
                             speed_point = _transform_point_homography(anchor, speed_context.get("transform"))
                         speed_history = speed_point_histories[(cid, track_id)]
                         if speed_point is not None:
@@ -2447,10 +2754,18 @@ def process_video(
                             _prune_points(speed_history, frame_count - history_frames)
                         pixel_speed = _estimate_speed_ft_per_sec(speed_history, fps)
                         if pixel_speed is not None:
-                            speed_ft_per_sec = pixel_speed * speed_feet_per_pixel
+                            speed_ft_per_sec = pixel_speed * float(speed_context.get("speed_scale", speed_feet_per_pixel or 1.0))
+                            speed_ft_per_sec = _smooth_speed_ft_per_sec(
+                                speed_ft_per_sec,
+                                track_speeds_ft.get((cid, track_id)),
+                                speed_smoothing_alpha,
+                            )
                             track_speed_histories[(cid, track_id)].append(speed_ft_per_sec)
                         if track_speed_histories[(cid, track_id)]:
-                            speed_ft_per_sec = float(np.mean(track_speed_histories[(cid, track_id)]))
+                            if speed_smoothing_alpha > 0.0:
+                                speed_ft_per_sec = float(track_speed_histories[(cid, track_id)][-1])
+                            else:
+                                speed_ft_per_sec = float(np.mean(track_speed_histories[(cid, track_id)]))
                             track_speeds_ft[(cid, track_id)] = speed_ft_per_sec
 
                     track_snapshots[cid][track_id] = {
@@ -2644,6 +2959,7 @@ def process_video(
                                 f'{name_a.lower()}_speed_{speed_key}': round(_speed_to_unit(speed_a_ft, speed_unit), 3) if speed_a_ft is not None else None,
                                 f'{name_b.lower()}_speed_{speed_key}': round(_speed_to_unit(speed_b_ft, speed_unit), 3) if speed_b_ft is not None else None,
                             }
+                            event_row.update(speed_event_fields)
                             conflict_events.append(event_row)
                             events_this_frame.append(event_row)
                             event_signatures.add(sig)
@@ -2759,8 +3075,14 @@ def process_video(
                 cv2.addWeighted(overlay, 0.35, annotated_frame, 0.65, 0, annotated_frame)
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
-            if calibration.get("start") and calibration.get("end"):
-                cv2.line(annotated_frame, calibration["start"], calibration["end"], (0, 255, 255), 2)
+            if show_indicators:
+                display_speed_lines = _normalize_speed_lines(calibration)
+                primary_line = display_speed_lines.get("primary") or {}
+                secondary_line = display_speed_lines.get("secondary") or {}
+                if primary_line.get("start") and primary_line.get("end"):
+                    cv2.line(annotated_frame, tuple(map(int, primary_line["start"])), tuple(map(int, primary_line["end"])), (0, 255, 255), 2)
+                if secondary_line.get("start") and secondary_line.get("end"):
+                    cv2.line(annotated_frame, tuple(map(int, secondary_line["start"])), tuple(map(int, secondary_line["end"])), (255, 255, 0), 2)
 
             for cid, tracks in confirmed_by_class.items():
                 cls_cfg = class_map[cid]
@@ -3001,14 +3323,24 @@ def main():
                         help="Recent frame history used for trajectory heading/intersection checks.")
     parser.add_argument("--track-speed", action="store_true",
                         help="Prompt for a 52 ft calibration line on the first frame and estimate object speed.")
+    parser.add_argument("--second-speed-line", action="store_true",
+                        help="After the 52 ft speed line, optionally prompt for a 72 ft second reference line.")
+    parser.add_argument("--line-warp", action="store_true",
+                        help="Use calibration.speed_lines endpoints for warp calibration when valid; falls back to passes.warp.src_points.")
     parser.add_argument("--speed-unit", choices=["mph", "ft/s"], default="mph",
                         help="Display/export unit for speed outputs.")
     parser.add_argument("--speed-space", choices=["auto", "warp", "image"], default="auto",
                         help="Coordinate space for speed estimation: auto uses homography when available.")
+    parser.add_argument("--speed-smoothing-window", type=int, default=5,
+                        help="Rolling speed smoothing window in samples when EMA is disabled.")
+    parser.add_argument("--speed-smoothing-alpha", type=float, default=0.0,
+                        help="Optional EMA smoothing alpha for speed, 0 disables EMA; lower values are smoother.")
     parser.add_argument("--hide-speed-overlay", action="store_true",
                         help="Keep speed in CSV outputs but hide speed labels on the video.")
     parser.add_argument("--show-direction-lines", action="store_true",
                         help="Draw short movement direction arrows from each bounding-box center.")
+    parser.add_argument("--show-indicators", action="store_true",
+                        help="Draw calibration speed-line indicators on the output video / live preview.")
 
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -3046,7 +3378,7 @@ def main():
     model = load_model(model_path, DEVICE, use_compile=use_compile)
 
     first_frame_for_setup = None
-    if args.deadzone or args.track_speed or args.conflict_zone:
+    if args.deadzone or args.track_speed or args.second_speed_line or args.conflict_zone:
         setup_cap = cv2.VideoCapture(cfg['input'])
         ret_first, first_frame_for_setup = setup_cap.read()
         setup_cap.release()
@@ -3075,18 +3407,37 @@ def main():
         else:
             print("WARNING: Could not read first frame for conflict zone setup.")
 
-    calibration = {}
+    calibration = dict(cfg.get('calibration', {}) or {})
     if args.track_speed:
+        speed_lines = dict((calibration.get("speed_lines") or {}))
         if first_frame_for_setup is not None:
             print("Speed setup: draw the full 52 ft bus-stop stretch on the first frame.")
-            calibration = _draw_measure_line_interactive(first_frame_for_setup.copy()) or {}
-            if calibration:
-                print(f"Speed calibration configured at {calibration['feet_per_pixel']:.6f} ft/pixel.")
-            else:
+            primary_line = _draw_measure_line_interactive(
+                first_frame_for_setup.copy(), length_ft=52.0, label="primary"
+            ) or {}
+            if primary_line:
+                speed_lines["primary"] = primary_line
+                calibration.update(primary_line)
+                print(f"Speed calibration configured at {primary_line['feet_per_pixel']:.6f} ft/pixel.")
+                if args.second_speed_line:
+                    print("Speed setup: draw the optional 72 ft perpendicular reference line.")
+                    secondary_line = _draw_measure_line_interactive(
+                        first_frame_for_setup.copy(),
+                        window_name="Draw 72 ft calibration line",
+                        length_ft=72.0,
+                        label="secondary",
+                    ) or {}
+                    if secondary_line:
+                        speed_lines["secondary"] = secondary_line
+                        speed_lines.setdefault("enabled_for_speed", True)
+                        print(f"Second speed calibration configured at {secondary_line['feet_per_pixel']:.6f} ft/pixel.")
+                    else:
+                        print("WARNING: Second speed line cancelled or invalid. Using the 52 ft line only.")
+                calibration["speed_lines"] = speed_lines
+            elif not speed_lines.get("primary"):
                 print("WARNING: Speed calibration cancelled or invalid. Speed tracking disabled.")
-        else:
+        elif not speed_lines.get("primary"):
             print("WARNING: Could not read first frame for speed setup. Speed tracking disabled.")
-
     process_video(
         input_video_path=cfg['input'],
         output_video_path=cfg['output'],
@@ -3103,12 +3454,16 @@ def main():
         single_cell_mode=args.no_grid,
         deadzones=deadzones,
         show_deadzones=args.show_deadzones,
+        show_indicators=args.show_indicators,
         conflict_zone_polygon=conflict_zone_polygon,
         parallel_angle_tolerance=args.parallel_angle_tolerance,
         trajectory_history=args.trajectory_history,
-        track_speed=args.track_speed and bool(calibration),
+        track_speed=args.track_speed and bool(_normalize_speed_lines(calibration).get("primary")),
         speed_unit=args.speed_unit,
         speed_space=args.speed_space,
+        speed_smoothing_window=args.speed_smoothing_window,
+        speed_smoothing_alpha=args.speed_smoothing_alpha,
+        line_warp=args.line_warp,
         hide_speed_overlay=args.hide_speed_overlay,
         calibration=calibration,
         show_direction_lines=args.show_direction_lines,

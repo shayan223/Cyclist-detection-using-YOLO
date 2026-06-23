@@ -32,6 +32,28 @@ def _install_test_stubs():
     cv2_stub.FONT_HERSHEY_SIMPLEX = 0
     cv2_stub.LINE_AA = 16
     cv2_stub.arrowedLine = lambda *args, **kwargs: None
+
+    def _get_perspective_transform(src, dst):
+        src = np.asarray(src, dtype=float)
+        dst = np.asarray(dst, dtype=float)
+        rows = []
+        vals = []
+        for (x, y), (u, v) in zip(src, dst):
+            rows.append([x, y, 1.0, 0.0, 0.0, 0.0, -u * x, -u * y])
+            vals.append(u)
+            rows.append([0.0, 0.0, 0.0, x, y, 1.0, -v * x, -v * y])
+            vals.append(v)
+        coeffs = np.linalg.solve(np.asarray(rows, dtype=float), np.asarray(vals, dtype=float))
+        return np.array(
+            [
+                [coeffs[0], coeffs[1], coeffs[2]],
+                [coeffs[3], coeffs[4], coeffs[5]],
+                [coeffs[6], coeffs[7], 1.0],
+            ],
+            dtype=float,
+        )
+
+    cv2_stub.getPerspectiveTransform = _get_perspective_transform
     sys.modules.setdefault("cv2", cv2_stub)
 
 
@@ -246,6 +268,85 @@ class PetHelperTests(unittest.TestCase):
         context, warning = PET._build_speed_context(calibration, "warp", None)
         self.assertIsNone(context)
         self.assertIn("homography is unavailable", warning)
+
+    def test_two_line_speed_context_prefers_ground_plane_in_auto(self):
+        calibration = {
+            "speed_lines": {
+                "primary": {"start": (0.0, 0.0), "end": (52.0, 0.0), "length_ft": 52.0},
+                "secondary": {"start": (10.0, 0.0), "end": (10.0, 72.0), "length_ft": 72.0},
+            }
+        }
+        context, warning = PET._build_speed_context(calibration, "auto", None)
+        self.assertIsNone(warning)
+        self.assertEqual(context["space"], "ground_plane_image")
+        self.assertEqual(context["speed_scale"], 1.0)
+
+    def test_two_line_speed_context_measures_horizontal_vertical_and_diagonal_feet(self):
+        calibration = {
+            "speed_lines": {
+                "primary": {"start": (0.0, 0.0), "end": (52.0, 0.0), "length_ft": 52.0},
+                "secondary": {"start": (10.0, 0.0), "end": (10.0, 72.0), "length_ft": 72.0},
+            }
+        }
+        context, _ = PET._build_speed_context(calibration, "auto", None)
+        H = context["transform"]
+        horizontal = [(0, PET._transform_point_homography((0.0, 0.0), H)), (30, PET._transform_point_homography((52.0, 0.0), H))]
+        vertical = [(0, PET._transform_point_homography((0.0, 0.0), H)), (30, PET._transform_point_homography((0.0, 72.0), H))]
+        diagonal = [(0, PET._transform_point_homography((0.0, 0.0), H)), (30, PET._transform_point_homography((52.0, 72.0), H))]
+        self.assertAlmostEqual(PET._estimate_speed_ft_per_sec(horizontal, fps=30), 52.0, places=4)
+        self.assertAlmostEqual(PET._estimate_speed_ft_per_sec(vertical, fps=30), 72.0, places=4)
+        self.assertAlmostEqual(PET._estimate_speed_ft_per_sec(diagonal, fps=30), (52.0 ** 2 + 72.0 ** 2) ** 0.5, places=4)
+
+    def test_line_warp_requires_world_points_and_falls_back(self):
+        speed_lines = PET._normalize_speed_lines({
+            "speed_lines": {
+                "primary": {"start": (0.0, 0.0), "end": (52.0, 0.0), "length_ft": 52.0},
+                "secondary": {"start": (26.0, 1.0), "end": (26.0, 73.0), "length_ft": 72.0},
+            }
+        })
+        H, H_inv, warning = PET._build_line_warp_homography(speed_lines, [960, 480])
+        self.assertIsNone(H)
+        self.assertIsNone(H_inv)
+        self.assertIn("world_points_ft", warning)
+
+    def test_line_warp_uses_four_endpoint_world_correspondences(self):
+        speed_lines = PET._normalize_speed_lines({
+            "speed_lines": {
+                "primary": {"start": (0.0, 0.0), "end": (52.0, 0.0), "length_ft": 52.0},
+                "secondary": {"start": (26.0, 1.0), "end": (26.0, 73.0), "length_ft": 72.0},
+                "world_points_ft": [(0.0, 0.0), (52.0, 0.0), (26.0, 1.0), (26.0, 73.0)],
+            }
+        })
+        H, H_inv, warning = PET._build_line_warp_homography(speed_lines, [960, 480], np.eye(3))
+        self.assertIsNone(warning)
+        self.assertIsNotNone(H)
+        self.assertIsNotNone(H_inv)
+        mapped = PET._transform_point_homography((0.0, 0.0), H)
+        self.assertAlmostEqual(mapped[0], 0.0, places=4)
+        self.assertAlmostEqual(mapped[1], 0.0, places=4)
+
+    def test_original_to_processing_transform_scales_points_for_warp_speed(self):
+        original_to_processing = PET._build_original_to_processing_transform(1920, 1080, 960, 540)
+        self.assertEqual(PET._transform_point_homography((1920.0, 1080.0), original_to_processing), (960.0, 540.0))
+    def test_pet_speed_event_fields_include_actor_speeds_and_difference(self):
+        fields = PET._pet_speed_event_fields("Cyclist", 22.0, "Pedestrian", 5.5, "mph")
+        self.assertEqual(fields["cyclist_speed_ft_per_s"], 22.0)
+        self.assertEqual(fields["pedestrian_speed_ft_per_s"], 5.5)
+        self.assertEqual(fields["speed_difference_ft_per_s"], 16.5)
+        self.assertAlmostEqual(fields["cyclist_speed_mph"], 15.0, places=3)
+        self.assertAlmostEqual(fields["pedestrian_speed_mph"], 3.75, places=3)
+        self.assertAlmostEqual(fields["speed_difference_mph"], 11.25, places=3)
+
+    def test_pet_speed_event_fields_leave_difference_empty_when_speed_missing(self):
+        fields = PET._pet_speed_event_fields("Pedestrian", None, "Cyclist", 12.0, "ft/s")
+        self.assertEqual(fields["cyclist_speed_ft_per_s"], 12.0)
+        self.assertIsNone(fields["pedestrian_speed_ft_per_s"])
+        self.assertIsNone(fields["speed_difference_ft_per_s"])
+    def test_speed_ema_smoothing(self):
+        self.assertEqual(PET._smooth_speed_ft_per_sec(30.0, 10.0, 0.25), 15.0)
+        self.assertEqual(PET._smooth_speed_ft_per_sec(30.0, 10.0, 0.0), 30.0)
+        self.assertEqual(PET._smooth_speed_ft_per_sec(30.0, 10.0, 1.5), 30.0)
+        self.assertEqual(PET._smooth_speed_ft_per_sec(None, 10.0, 0.25), 10.0)
 
 
 if __name__ == "__main__":
